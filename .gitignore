@@ -1,1 +1,7 @@
 /target
+.vscode
+Cargo.lock
+src/panda_ik_rust-build/*
+src/panda_ik_rust-stamp/*
+tmp/*
+udp
