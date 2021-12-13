@@ -76,6 +76,12 @@ fn position_cost(current_position: &Vector3<f64>, desired_position: &Vector3<f64
     //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
 
+fn movement_cost(state: &[f64], init_state: &[f64]) -> f64 {
+    let n = (state[0] - init_state[0]).powi(2)+(state[1] - init_state[1]).powi(2)+(state[2] - init_state[2]).powi(2)+(state[3] - init_state[3]).powi(2)+(state[4] - init_state[4]).powi(2)+(state[5] - init_state[5]).powi(2)+(state[6] - init_state[6]).powi(2);
+    n / 10.
+    //groove_loss(n, 0., 2, 0.1, 10.0, 2)
+}
+
 fn drone_cost(state: &[f64], trans: &Vector3<f64>) -> f64 {
     let n = (state[7]-trans[0]-0.3).powi(2) + (state[8]-trans[1]).powi(2) + (state[9]-trans[2]).powi(2) + (state[10]-3.14).powi(2); // (state[10] - state[7].atan2(state[8])).powi(2)
     n
@@ -176,6 +182,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
     let bounds = Rectangle::new(Some(&lb), Some(&ub));
 
     let mut q_state = unsafe{std::ptr::read(q).clone()};
+    let mut init_state = unsafe{std::ptr::read(q).clone()};
 
     // let solver = k::JacobianIkSolver::new(0.01, 0.01, 0.5, 100);
     
@@ -196,6 +203,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         // *c = position_cost(&trans.translation.vector, &position)
         //     + rotation_cost(&trans.rotation, &orientation);
         *c = position_cost(&trans.translation.vector, &position);
+        *c += movement_cost(&u, &init_state);
         *c += rotation_cost(&trans.rotation, &orientation);
         *c += drone_cost(&u,&position);
         Ok(())
