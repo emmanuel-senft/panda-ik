@@ -67,29 +67,40 @@ int main(int argc, char **argv) {
             std::array<double, 11> state = {joint_angles[0],joint_angles[1],joint_angles[2],joint_angles[3],joint_angles[4],joint_angles[5],joint_angles[6],droneTransform.transform.translation.x, droneTransform.transform.translation.y, droneTransform.transform.translation.z, y};
 
             solve(state.data(), name.c_str(), position.data(), orientation.data());
-            
-            auto joint_msg = std_msgs::Float64MultiArray();
-            joint_msg.data.assign(state.data(), state.data() + 7);
 
-            auto now = std::chrono::system_clock::now();
-            while ((now - last_msg_time) < minimum_msg_delay) {
-                now = std::chrono::system_clock::now();
+            // Confirm optimization has returned valid output (no nan -- happens occasionally)
+            bool valid_output = true;
+
+            for(int ii=0;ii<11;ii++){
+                if(isnan(state[ii])){
+                    valid_output = false;
+                }
             }
-            last_msg_time = now;
 
-            q.setEuler(state[10],0,0);
-            pub.publish(joint_msg);
-            auto drone_msg = geometry_msgs::PoseStamped();
-            drone_msg.header.frame_id = "panda_link0";
-            drone_msg.header.stamp = ros::Time(0);
-            drone_msg.pose.position.x=state[7];
-            drone_msg.pose.position.y=state[8];
-            drone_msg.pose.position.z=state[9];
-            drone_msg.pose.orientation.x=q[0];
-            drone_msg.pose.orientation.y=q[1];
-            drone_msg.pose.orientation.z=q[2];
-            drone_msg.pose.orientation.w=q[3];
-            drone_pub.publish(drone_msg);
+            if(valid_output){
+                auto joint_msg = std_msgs::Float64MultiArray();
+                joint_msg.data.assign(state.data(), state.data() + 7);
+
+                auto now = std::chrono::system_clock::now();
+                while ((now - last_msg_time) < minimum_msg_delay) {
+                    now = std::chrono::system_clock::now();
+                }
+                last_msg_time = now;
+
+                q.setEuler(state[10],0,0);
+                pub.publish(joint_msg);
+                auto drone_msg = geometry_msgs::PoseStamped();
+                drone_msg.header.frame_id = "panda_link0";
+                drone_msg.header.stamp = ros::Time(0);
+                drone_msg.pose.position.x=state[7];
+                drone_msg.pose.position.y=state[8];
+                drone_msg.pose.position.z=state[9];
+                drone_msg.pose.orientation.x=q[0];
+                drone_msg.pose.orientation.y=q[1];
+                drone_msg.pose.orientation.z=q[2];
+                drone_msg.pose.orientation.w=q[3];
+                drone_pub.publish(drone_msg);
+            }
         }
     );
 
