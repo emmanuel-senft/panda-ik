@@ -202,7 +202,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         let trans = robot.find(&name).unwrap().world_transform().unwrap();
         // *c = position_cost(&trans.translation.vector, &position)
         //     + rotation_cost(&trans.rotation, &orientation);
-        *c = position_cost(&trans.translation.vector, &position);
+        *c = 100.0 * position_cost(&trans.translation.vector, &position);
         *c += movement_cost(&u, &init_state);
         *c += rotation_cost(&trans.rotation, &orientation);
         *c += drone_cost(&u,&position);

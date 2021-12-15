@@ -9,6 +9,8 @@
 #include <iostream>
 #include <chrono>
 
+std::array<double, 7> joint_angles = {0,0,0,-1.5,0,1.5,0};
+
 int main(int argc, char **argv) {
     ros::init(argc, argv, "panda_ik");
     ros::NodeHandle nh("~");
@@ -31,13 +33,15 @@ int main(int argc, char **argv) {
     if (!get_required_param("URDF", urdf)) return 0;
     if (!init(urdf.c_str())) return 0;
 
-    std::array<double, 7> joint_angles = {0,0,0,-1.5,0,1.5,0};
 
     std::chrono::system_clock::time_point last_msg_time = std::chrono::system_clock::now();
     std::chrono::milliseconds minimum_msg_delay = std::chrono::milliseconds(0);
 
     ros::Publisher pub = nh.advertise<std_msgs::Float64MultiArray>("output", 1);
     ros::Publisher drone_pub = nh.advertise<geometry_msgs::PoseStamped>("drone_output", 1);
+
+
+    
     ros::Subscriber sub = nh.subscribe<geometry_msgs::PoseStamped>("input", 1,
         [&](const geometry_msgs::PoseStamped::ConstPtr& msg) {
 
@@ -80,7 +84,7 @@ int main(int argc, char **argv) {
             if(valid_output){
                 auto joint_msg = std_msgs::Float64MultiArray();
                 joint_msg.data.assign(state.data(), state.data() + 7);
-
+                joint_angles = {state[0], state[1], state[2], state[3], state[4], state[5], state[6]};
                 auto now = std::chrono::system_clock::now();
                 while ((now - last_msg_time) < minimum_msg_delay) {
                     now = std::chrono::system_clock::now();
