@@ -82,8 +82,12 @@ fn movement_cost(state: &[f64], init_state: &[f64]) -> f64 {
     //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
 
-fn drone_cost(state: &[f64], trans: &Vector3<f64>) -> f64 {
-    let n = (state[7]-trans[0]-0.3).powi(2) + (state[8]-trans[1]).powi(2) + (state[9]-trans[2]).powi(2) + (state[10]-3.14).powi(2); // (state[10] - state[7].atan2(state[8])).powi(2)
+fn drone_cost(state: &[f64], trans: &Vector3<f64>, velocity: &Vector3<f64>) -> f64 {
+    let destination = trans+velocity*0.5;
+    let distance = 0.3+velocity.norm()/2.;
+    let angle = destination[1].atan2(destination[0]);
+    let theta = std::f64::consts::PI/16.;
+    let n = (state[7]-destination[0]-distance*angle.cos()).powi(2) + (state[8]-destination[1]-distance*angle.sin()).powi(2) + (state[9]-destination[2]-theta.sin()*distance).powi(2) + (state[10]-std::f64::consts::PI-angle).powi(2); // (state[10] - state[7].atan2(state[8])).powi(2)
     n
     //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
@@ -117,13 +121,15 @@ fn finite_difference(f: &dyn Fn(&[f64], &mut f64) -> Result<(), SolverError>, u:
 
 #[no_mangle]
 pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char, 
-                        goal_x: *mut [f64;3], goal_q: *mut [f64;4]) {
+                        goal_x: *mut [f64;3], goal_q: *mut [f64;4], vel: *mut [f64;3]) {
 
     let state = get_state().get_mut().unwrap();
     let name = charp_to_str(link_name);
 
     let position = unsafe{Vector3::from(std::ptr::read(goal_x))};
     let orientation = unsafe{UnitQuaternion::from_quaternion(Quaternion::from(std::ptr::read(goal_q)))};
+
+    let velocity = unsafe{Vector3::from(std::ptr::read(vel))};
 
     let robot = &mut state.robot;
     let panoc_cache = &mut state.panoc_cache;
@@ -154,7 +160,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         -2.,
         -2.,
         0.,
-        -std::f64::consts::PI
+        0.
     ];
     let mut ub = [
         2.8973,
@@ -167,7 +173,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         2.,
         2.,
         2.,
-        std::f64::consts::PI
+        2.*std::f64::consts::PI
     ];
 
     let mut middle = [0.;11];
@@ -205,7 +211,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         *c = 100.0 * position_cost(&trans.translation.vector, &position);
         *c += movement_cost(&u, &init_state);
         *c += rotation_cost(&trans.rotation, &orientation);
-        *c += drone_cost(&u,&position);
+        *c += drone_cost(&u,&position,&velocity);
         Ok(())
     };
 

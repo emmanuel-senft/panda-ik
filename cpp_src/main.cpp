@@ -40,8 +40,9 @@ int main(int argc, char **argv) {
     ros::Publisher pub = nh.advertise<std_msgs::Float64MultiArray>("output", 1);
     ros::Publisher drone_pub = nh.advertise<geometry_msgs::PoseStamped>("drone_output", 1);
 
+    geometry_msgs::PoseStamped lastPose = geometry_msgs::PoseStamped();
+    bool lastPoseUndefined = true;
 
-    
     ros::Subscriber sub = nh.subscribe<geometry_msgs::PoseStamped>("input", 1,
         [&](const geometry_msgs::PoseStamped::ConstPtr& msg) {
 
@@ -58,10 +59,17 @@ int main(int argc, char **argv) {
             }
 
             auto pose = msg->pose;
+            if(lastPoseUndefined){
+                lastPose = *msg;
+                lastPoseUndefined = false;
+            }
             std::string name = msg->header.frame_id;
             std::array<double, 3> position = {pose.position.x, pose.position.y, pose.position.z};
             std::array<double, 4> orientation = {pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
-
+            
+            double dt = (msg->header.stamp-lastPose.header.stamp).toSec();
+            std::array<double, 3> velocity = {(pose.position.x-lastPose.pose.position.x)/dt,(pose.position.y-lastPose.pose.position.y)/dt,(pose.position.z-lastPose.pose.position.z)/dt};
+            lastPose = *msg;
 
             tf2::Quaternion q(droneTransform.transform.rotation.x,droneTransform.transform.rotation.y,droneTransform.transform.rotation.z,droneTransform.transform.rotation.w);
             tf2::Matrix3x3 rot_drone = tf2::Matrix3x3(q);
@@ -70,7 +78,7 @@ int main(int argc, char **argv) {
             
             std::array<double, 11> state = {joint_angles[0],joint_angles[1],joint_angles[2],joint_angles[3],joint_angles[4],joint_angles[5],joint_angles[6],droneTransform.transform.translation.x, droneTransform.transform.translation.y, droneTransform.transform.translation.z, y};
 
-            solve(state.data(), name.c_str(), position.data(), orientation.data());
+            solve(state.data(), name.c_str(), position.data(), orientation.data(), velocity.data());
 
             // Confirm optimization has returned valid output (no nan -- happens occasionally)
             bool valid_output = true;
@@ -91,7 +99,7 @@ int main(int argc, char **argv) {
                 }
                 last_msg_time = now;
 
-                q.setEuler(state[10],0,0);
+                q.setEuler(0,0,state[10]);
                 pub.publish(joint_msg);
                 auto drone_msg = geometry_msgs::PoseStamped();
                 drone_msg.header.frame_id = "panda_link0";
