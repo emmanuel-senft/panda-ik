@@ -8,6 +8,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <iostream>
 #include <chrono>
+#include <math.h>
 
 std::array<double, 7> joint_angles = {0,0,0,-1.5,0,1.5,0};
 
@@ -42,7 +43,7 @@ int main(int argc, char **argv) {
 
     geometry_msgs::PoseStamped lastPose = geometry_msgs::PoseStamped();
     bool lastPoseUndefined = true;
-
+    bool initialized = false;
     ros::Subscriber sub = nh.subscribe<geometry_msgs::PoseStamped>("input", 1,
         [&](const geometry_msgs::PoseStamped::ConstPtr& msg) {
 
@@ -88,8 +89,16 @@ int main(int argc, char **argv) {
                     valid_output = false;
                 }
             }
+            if(initialized)
+                for(int ii=0;ii<7;ii++){
+                    if(fabs(state[ii]-joint_angles[ii]>.1)){
+                        std::cout<<"Error"<<std::endl;
+                        valid_output = false;
+                    }
+                }
 
             if(valid_output){
+                initialized = true;
                 auto joint_msg = std_msgs::Float64MultiArray();
                 joint_msg.data.assign(state.data(), state.data() + 7);
                 joint_angles = {state[0], state[1], state[2], state[3], state[4], state[5], state[6]};
