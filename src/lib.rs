@@ -73,7 +73,6 @@ pub fn groove_loss(x_val: f64, offset: f64, top_width: f64, bottom_width: i32, d
 fn position_cost(current_position: &Vector3<f64>, desired_position: &Vector3<f64>) -> f64 {
     let n = (current_position - desired_position).norm();
     n * n
-    //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
 
 fn movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f64 {
@@ -82,7 +81,6 @@ fn movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f6
         n+=((state[i]-init_state[i])/(hb[i]-lb[i])).powi(2);
     }
     n
-    //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
 
 fn drone_cost(state: &[f64], trans: &Vector3<f64>, velocity: &Vector3<f64>) -> f64 {
@@ -92,8 +90,8 @@ fn drone_cost(state: &[f64], trans: &Vector3<f64>, velocity: &Vector3<f64>) -> f
     let theta = std::f64::consts::PI/16.;
     let n = (state[7]-destination[0]-distance*angle.cos()).powi(2) + (state[8]-destination[1]-distance*angle.sin()).powi(2) + (state[9]-destination[2]-theta.sin()*distance).powi(2) + (state[10]-std::f64::consts::PI-angle).powi(2); // (state[10] - state[7].atan2(state[8])).powi(2)
     n
-    //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
+
 
 fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
     let mut n = 0.0;
@@ -105,8 +103,7 @@ fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
 
 fn rotation_cost(current_rotation: &UnitQuaternion<f64>, desired_rotation: &UnitQuaternion<f64>) -> f64 {
     let a = current_rotation.angle_to(desired_rotation);
-    a * a
-    //groove_loss(a, 0., 2, 0.1, 10.0, 2)
+    a*a
 }
 
 fn finite_difference(f: &dyn Fn(&[f64], &mut f64) -> Result<(), SolverError>, u: &[f64], grad: &mut [f64]) -> Result<(), SolverError> {
@@ -201,24 +198,10 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
     let mut q_state = unsafe{std::ptr::read(q).clone()};
     let mut init_state = unsafe{std::ptr::read(q).clone()};
 
-    // let solver = k::JacobianIkSolver::new(0.01, 0.01, 0.5, 100);
-    
-    // let arm = k::SerialChain::from_end(robot.find(&name).unwrap());
-    // arm.set_joint_positions(&joint_position).unwrap();
-    // solver.solve(&arm, &na::Isometry3::from_parts(na::Translation3::from(position), orientation)).unwrap();
-    // unsafe {
-    //     for i in 0..7 {
-    //         (*q)[i] = arm.joint_positions()[i]
-    //     }
-    // }
-    // return;
-
     let cost = |u: &[f64], c: &mut f64| {
         robot.set_joint_positions_clamped(&u[0..7]);
         robot.update_transforms();
         let trans = robot.find(&name).unwrap().world_transform().unwrap();
-        // *c = position_cost(&trans.translation.vector, &position)
-        //     + rotation_cost(&trans.rotation, &orientation);
         *c = 100.0 * position_cost(&trans.translation.vector, &position);
         *c += 10.*rotation_cost(&trans.rotation, &orientation);
         *c += 10.0 * movement_cost(&u, &init_state, &lb, &ub);
