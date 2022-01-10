@@ -76,9 +76,12 @@ fn position_cost(current_position: &Vector3<f64>, desired_position: &Vector3<f64
     //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
 
-fn movement_cost(state: &[f64], init_state: &[f64]) -> f64 {
-    let n = (state[0] - init_state[0]).powi(2)+(state[1] - init_state[1]).powi(2)+(state[2] - init_state[2]).powi(2)+(state[3] - init_state[3]).powi(2)+(state[4] - init_state[4]).powi(2)+(state[5] - init_state[5]).powi(2)+(state[6] - init_state[6]).powi(2);
-    n / 10.
+fn movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f64 {
+    let mut n = 0.0;
+    for i in 0..7 {
+        n+=((state[i]-init_state[i])/(hb[i]-lb[i])).powi(2);
+    }
+    n
     //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
 
@@ -209,8 +212,8 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         // *c = position_cost(&trans.translation.vector, &position)
         //     + rotation_cost(&trans.rotation, &orientation);
         *c = 100.0 * position_cost(&trans.translation.vector, &position);
-        *c += movement_cost(&u, &init_state);
         *c += rotation_cost(&trans.rotation, &orientation);
+        *c += 10.0 * movement_cost(&u, &init_state, &lb, &ub);
         *c += drone_cost(&u,&position,&velocity);
         Ok(())
     };
