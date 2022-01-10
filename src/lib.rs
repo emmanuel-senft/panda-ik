@@ -95,6 +95,14 @@ fn drone_cost(state: &[f64], trans: &Vector3<f64>, velocity: &Vector3<f64>) -> f
     //groove_loss(n, 0., 2, 0.1, 10.0, 2)
 }
 
+fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
+    let mut n = 0.0;
+    for i in 0..7 {
+        n+=0.5+groove_loss((state[i]-lb[i]).max(hb[i]-state[i])/(hb[i]-lb[i]), 0.,1.,12,2.,2.,2);
+    }
+    n
+}
+
 fn rotation_cost(current_rotation: &UnitQuaternion<f64>, desired_rotation: &UnitQuaternion<f64>) -> f64 {
     let a = current_rotation.angle_to(desired_rotation);
     a * a
@@ -215,6 +223,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         *c += rotation_cost(&trans.rotation, &orientation);
         *c += 10.0 * movement_cost(&u, &init_state, &lb, &ub);
         *c += drone_cost(&u,&position,&velocity);
+        *c += 0.1 * joint_limit_cost(&u, &lb, &ub);
         Ok(())
     };
 
