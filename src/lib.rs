@@ -220,7 +220,7 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         // *c = position_cost(&trans.translation.vector, &position)
         //     + rotation_cost(&trans.rotation, &orientation);
         *c = 100.0 * position_cost(&trans.translation.vector, &position);
-        *c += rotation_cost(&trans.rotation, &orientation);
+        *c += 10.*rotation_cost(&trans.rotation, &orientation);
         *c += 10.0 * movement_cost(&u, &init_state, &lb, &ub);
         *c += drone_cost(&u,&position,&velocity);
         *c += 0.1 * joint_limit_cost(&u, &lb, &ub);
