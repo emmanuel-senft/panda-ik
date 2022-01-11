@@ -1,6 +1,6 @@
 #include "PandaIKRust.h"
 #include "ros/ros.h"
-#include "geometry_msgs/PoseStamped.h"
+#include "nav_msgs/Odometry.h"
 #include "std_msgs/Float64MultiArray.h"
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/TransformStamped.h>
@@ -42,10 +42,11 @@ int main(int argc, char **argv) {
     ros::Publisher drone_pub = nh.advertise<geometry_msgs::PoseStamped>("drone_output", 1);
 
     geometry_msgs::PoseStamped lastPose = geometry_msgs::PoseStamped();
-    bool lastPoseUndefined = true;
+
     bool initialized = false;
-    ros::Subscriber sub = nh.subscribe<geometry_msgs::PoseStamped>("input", 1,
-        [&](const geometry_msgs::PoseStamped::ConstPtr& msg) {
+
+    ros::Subscriber sub = nh.subscribe<nav_msgs::Odometry>("input", 1,
+        [&](const nav_msgs::Odometry::ConstPtr& msg) {
 
 
             geometry_msgs::TransformStamped droneTransform;
@@ -59,19 +60,14 @@ int main(int argc, char **argv) {
                 return;
             }
 
-            auto pose = msg->pose;
-            if(lastPoseUndefined){
-                lastPose = *msg;
-                lastPoseUndefined = false;
-            }
-            std::string name = msg->header.frame_id;
+            auto pose = msg->pose.pose;
+            std::string name = msg->child_frame_id;
             std::array<double, 3> position = {pose.position.x, pose.position.y, pose.position.z};
             std::array<double, 4> orientation = {pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
             
             double dt = (msg->header.stamp-lastPose.header.stamp).toSec();
-            std::array<double, 3> velocity = {(pose.position.x-lastPose.pose.position.x)/dt,(pose.position.y-lastPose.pose.position.y)/dt,(pose.position.z-lastPose.pose.position.z)/dt};
-            lastPose = *msg;
-
+            std::array<double, 3> velocity = {msg->twist.twist.linear.x,msg->twist.twist.linear.y,msg->twist.twist.linear.z};
+            
             tf2::Quaternion q(droneTransform.transform.rotation.x,droneTransform.transform.rotation.y,droneTransform.transform.rotation.z,droneTransform.transform.rotation.w);
             tf2::Matrix3x3 rot_drone = tf2::Matrix3x3(q);
             double r, p, y;
