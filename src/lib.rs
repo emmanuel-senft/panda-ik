@@ -221,8 +221,13 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
 
     bounds.project(&mut q_state);
     let _status = opt.solve(&mut q_state);
+    robot.set_joint_positions_clamped(&q_state[0..7]);
+    robot.update_transforms();
+    let trans = robot.find(&name).unwrap().world_transform().unwrap();
+
     //println!("{:?}", robot.find(&name).unwrap().world_velocity().unwrap());
     unsafe {
         *q = q_state;
+        *goal_x = [trans.translation.x,trans.translation.y,trans.translation.z];
     }
 }

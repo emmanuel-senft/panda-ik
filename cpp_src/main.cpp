@@ -89,13 +89,20 @@ int main(int argc, char **argv) {
                     valid_output = false;
                 }
             }
-            if(initialized)
+            if(initialized && valid_output){
                 for(int ii=0;ii<7;ii++){
                     if(fabs(state[ii]-joint_angles[ii]>.1)){
                         std::cout<<"Error"<<std::endl;
                         valid_output = false;
                     }
                 }
+                if(!valid_output){
+                    if(fabs(pose.position.x - position[0])<.05 && fabs(pose.position.y - position[1])<.05 && fabs(pose.position.z - position[2])<.05){
+                        valid_output = true;
+                        std::cout<<"corrected"<<std::endl;
+                    }
+                }
+            }
 
             if(valid_output){
                 initialized = true;
