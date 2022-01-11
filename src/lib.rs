@@ -83,16 +83,28 @@ fn movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f6
     n
 }
 
-fn drone_cost(state: &[f64], trans: &Vector3<f64>, velocity: &Vector3<f64>) -> f64 {
-    let destination = trans+velocity*0.5;
-    let distance = 0.3+velocity.norm()/2.;
-    let angle = destination[1].atan2(destination[0]);
-    let theta = std::f64::consts::PI/16.;
-    let n = (state[7]-destination[0]-distance*angle.cos()).powi(2) + (state[8]-destination[1]-distance*angle.sin()).powi(2) + (state[9]-destination[2]-theta.sin()*distance).powi(2) + (state[10]-std::f64::consts::PI-angle).powi(2); // (state[10] - state[7].atan2(state[8])).powi(2)
+fn drone_orientation_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
+    let theta = state[10];
+    let angle2 = (state[8]-destination[1]).atan2(state[7]-destination[0]);
+    let n=(theta.cos()*(state[8]-destination[1])-theta.sin()*(state[7]-destination[0])).powi(2)+((theta-angle2-std::f64::consts::PI)/(2.*std::f64::consts::PI)).powi(2);
+    ((state[10]-angle2-std::f64::consts::PI)/(2.*std::f64::consts::PI)).powi(2)
+}
+
+fn drone_distance_cost(state: &[f64], destination: &Vector3<f64>, velocity: &Vector3<f64>) -> f64 {
+    let n = ((state[7]-destination[0]).powi(2)+(state[8]-destination[1]).powi(2)-(0.5+velocity.norm()/4.).powi(2)).powi(2);
     n
 }
 
+fn drone_altitude_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
+    let n=(state[9]-destination[2]).powi(2);
+    n
+}
 
+fn drone_angle_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQuaternion<f64>) -> f64 {
+    let theta=(state[8]-destination[1]).atan2(state[7]-destination[0]);
+    (theta-rotation.euler_angles().2).powi(2)
+}
+    
 fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
     let mut n = 0.0;
     for i in 0..7 {
@@ -167,8 +179,8 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         //Drone x,y,z,theta
         -2.,
         -2.,
-        0.,
-        0.
+        0.2,
+        -2.*std::f64::consts::PI
     ];
     let mut ub = [
         2.8973,
@@ -202,10 +214,15 @@ pub extern "C" fn solve(q: *mut [f64;11], link_name: *mut c_char,
         robot.set_joint_positions_clamped(&u[0..7]);
         robot.update_transforms();
         let trans = robot.find(&name).unwrap().world_transform().unwrap();
+        let destination = position+velocity*0.25;
+
         *c = 100.0 * position_cost(&trans.translation.vector, &position);
         *c += 10.*rotation_cost(&trans.rotation, &orientation);
         *c += 10.0 * movement_cost(&u, &init_state, &lb, &ub);
-        *c += drone_cost(&u,&position,&velocity);
+        *c += 2.*drone_orientation_cost(&u,&destination);
+        *c += 10.*drone_distance_cost(&u,&destination,&velocity);
+        *c += drone_altitude_cost(&u,&destination);
+        *c += drone_angle_cost(&u,&destination, &orientation);
         *c += 0.1 * joint_limit_cost(&u, &lb, &ub);
         Ok(())
     };
