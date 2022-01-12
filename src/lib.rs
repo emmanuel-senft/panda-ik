@@ -108,7 +108,7 @@ fn drone_angle_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQu
 fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
     let mut n = 0.0;
     for i in 0..7 {
-        n+=0.5+groove_loss((state[i]-lb[i]).max(hb[i]-state[i])/(hb[i]-lb[i]), 0.,1.,12,2.,2.,2);
+        n+=groove_loss((state[i]-lb[i])/(hb[i]-lb[i]), 0.5,0.5,12,2.,2.,2);
     }
     n
 }
