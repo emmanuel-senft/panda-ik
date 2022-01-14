@@ -57,63 +57,69 @@ int main(int argc, char **argv) {
     bool initialized = false;
 
     int freq = 100;
+    bool start = false;
     ros::Subscriber sub = nh.subscribe<geometry_msgs::TwistStamped>("input", 1,
         [&](const geometry_msgs::TwistStamped::ConstPtr& msg) {
             commandedVel = msg->twist;
             frame_id = msg->header.frame_id;
+            start = true;
         }
     );
+    std::array<double, 4> last_drone_state = {0,0,0,0};
     ros::Rate loop_rate(freq);
     while (ros::ok()){
-        geometry_msgs::TransformStamped droneTransform;
-        try{
-            droneTransform = tfBuffer.lookupTransform("panda_link0", "drone",
-                                ros::Time(0));
-        }
-        catch (tf2::TransformException &ex) {
-            ROS_WARN("%s",ex.what());
-            ros::Duration(1.0).sleep();
+        if(! start){
+            ros::spinOnce();
+            loop_rate.sleep();
             continue;
         }
-        
-        tf2::Quaternion q(droneTransform.transform.rotation.x,droneTransform.transform.rotation.y,droneTransform.transform.rotation.z,droneTransform.transform.rotation.w);
-        tf2::Matrix3x3 rot_drone = tf2::Matrix3x3(q);
-        double r, p, y;
-        rot_drone.getRPY(r, p, y, 2);
 
+        bool valid_output = true;
         std::string name = "panda_gripper_joint";//msg->child_frame_id;
 
         commandedPose.pose.position.x+=commandedVel.linear.x/freq;
         commandedPose.pose.position.y+=commandedVel.linear.y/freq;
         commandedPose.pose.position.z+=commandedVel.linear.z/freq;
-
+        
         KDL::Rotation robot_rot = KDL::Rotation::Quaternion(commandedPose.pose.orientation.x,commandedPose.pose.orientation.y,commandedPose.pose.orientation.z,commandedPose.pose.orientation.w);
         KDL::Rotation motion = KDL::Rotation::RPY(commandedVel.angular.x/freq,commandedVel.angular.y/freq,commandedVel.angular.z/freq);
         (motion*robot_rot).GetQuaternion(commandedPose.pose.orientation.x,commandedPose.pose.orientation.y,commandedPose.pose.orientation.z,commandedPose.pose.orientation.w);
+        
+        double norm = sqrt(commandedPose.pose.orientation.x*commandedPose.pose.orientation.x+commandedPose.pose.orientation.y*commandedPose.pose.orientation.y+commandedPose.pose.orientation.z*commandedPose.pose.orientation.z+commandedPose.pose.orientation.w*commandedPose.pose.orientation.w);
+        if (norm != 1){
+            commandedPose.pose.orientation.x /= norm;
+            commandedPose.pose.orientation.y /= norm;
+            commandedPose.pose.orientation.z /= norm;
+            commandedPose.pose.orientation.w /= norm;
+        }
 
         std::array<double, 3> position = {commandedPose.pose.position.x, commandedPose.pose.position.y, commandedPose.pose.position.z};
         std::array<double, 4> orientation = {commandedPose.pose.orientation.x, commandedPose.pose.orientation.y, commandedPose.pose.orientation.z, commandedPose.pose.orientation.w};
         std::array<double, 3> velocity = {commandedVel.linear.x, commandedVel.linear.y,commandedVel.linear.z};
         
-        std::array<double, 11> state = {joint_angles[0],joint_angles[1],joint_angles[2],joint_angles[3],joint_angles[4],joint_angles[5],joint_angles[6],droneTransform.transform.translation.x, droneTransform.transform.translation.y, droneTransform.transform.translation.z, y};
+        std::array<double, 7> robot_state = joint_angles;
+        std::array<double, 4> drone_state = last_drone_state;
 
-        solve(state.data(), name.c_str(), position.data(), orientation.data(), velocity.data());
-
+        //robot error, robot out of time, drone error, drone out of time
+        std::array<bool, 4> errors = {0,0,0,0};
+        solve(robot_state.data(), drone_state.data(), name.c_str(), position.data(), orientation.data(), velocity.data(), errors.data());
+        if(errors[0]){
+            robot_state=joint_angles;
+        }
+        if(errors[1]){
+            ;
+        }
+        if(errors[2]){
+            drone_state=last_drone_state;
+        }
+        if(errors[3])
+            ;
         commandedPose.header.stamp = ros::Time::now();
         panda_pub.publish(commandedPose);
-        // Confirm optimization has returned valid output (no nan -- happens occasionally)
-        bool valid_output = true;
-
-        for(int ii=0;ii<11;ii++){
-            if(isnan(state[ii])){
-                valid_output = false;
-            }
-        }
 
         if(initialized && valid_output){
             for(int ii=0;ii<7;ii++){
-                if(fabs(state[ii]-joint_angles[ii]>.1)){
-                    std::cout<<"Error"<<std::endl;
+                if(fabs(robot_state[ii]-joint_angles[ii]>.1)){
                     valid_output = false;
                 }
             }
@@ -124,33 +130,37 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        if(!valid_output)
+            robot_state=joint_angles;
 
-        if(valid_output){
-            initialized = true;
-            auto joint_msg = std_msgs::Float64MultiArray();
-            joint_msg.data.assign(state.data(), state.data() + 7);
-            joint_angles = {state[0], state[1], state[2], state[3], state[4], state[5], state[6]};
-            auto now = std::chrono::system_clock::now();
-            while ((now - last_msg_time) < minimum_msg_delay) {
-                now = std::chrono::system_clock::now();
-            }
-            last_msg_time = now;
+        initialized = true;
+        auto joint_msg = std_msgs::Float64MultiArray();
+        joint_msg.data.assign(robot_state.data(), robot_state.data() + 7);
+        joint_angles = robot_state;
 
-            q.setEuler(0,0,state[10]);
-            pub.publish(joint_msg);
-            auto drone_msg = geometry_msgs::PoseStamped();
-            drone_msg.header.frame_id = "panda_link0";
-            drone_msg.header.stamp = ros::Time(0);
-            drone_msg.pose.position.x=state[7];
-            drone_msg.pose.position.y=state[8];
-            drone_msg.pose.position.z=state[9];
-            drone_msg.pose.orientation.x=q[0];
-            drone_msg.pose.orientation.y=q[1];
-            drone_msg.pose.orientation.z=q[2];
-            drone_msg.pose.orientation.w=q[3];
-            drone_pub.publish(drone_msg);
+        tf2::Quaternion q(0,0,0,1);
+
+        q.setEuler(0,0,drone_state[3]);
+        auto drone_msg = geometry_msgs::PoseStamped();
+        drone_msg.header.frame_id = "panda_link0";
+        drone_msg.header.stamp = ros::Time(0);
+        drone_msg.pose.position.x=drone_state[0];
+        drone_msg.pose.position.y=drone_state[1];
+        drone_msg.pose.position.z=drone_state[2];
+        drone_msg.pose.orientation.x=q[0];
+        drone_msg.pose.orientation.y=q[1];
+        drone_msg.pose.orientation.z=q[2];
+        drone_msg.pose.orientation.w=q[3];
+
+        auto now = std::chrono::system_clock::now();
+        pub.publish(joint_msg);
+        drone_pub.publish(drone_msg);
+
+        while ((now - last_msg_time) < minimum_msg_delay) {
+            now = std::chrono::system_clock::now();
         }
-
+        last_msg_time = now;
+        last_drone_state = drone_state;
         ros::spinOnce();
         loop_rate.sleep();
     }
