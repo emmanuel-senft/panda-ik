@@ -1,5 +1,5 @@
 extern crate nalgebra as na;
-use na::{Vector3, UnitQuaternion, Quaternion};
+use na::{Vector3, UnitQuaternion, Quaternion, Rotation3, Unit};
 
 use optimization_engine::constraints::{Constraint, Rectangle};
 use optimization_engine::{Optimizer, Problem, SolverError, panoc::*,core::ExitStatus};
@@ -7,11 +7,17 @@ use optimization_engine::{Optimizer, Problem, SolverError, panoc::*,core::ExitSt
 use std::borrow::BorrowMut;
 use std::panic::catch_unwind;
 use std::sync::{Mutex};
+use std::cmp;
 
 extern crate libc;
 use libc::c_char;
 use std::ffi::CStr;
 use std::str;
+
+use geo_types::{Point,LineString, Polygon};
+use geo::Closest;
+use geo::algorithm::euclidean_distance::EuclideanDistance;
+use geo::algorithm::closest_point::ClosestPoint;
 
 use k::*;
 
@@ -112,7 +118,13 @@ fn drone_angle_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQu
     let theta=(state[1]-destination[1]).atan2(state[0]-destination[0]);
     (theta-rotation.euler_angles().2).powi(2)
 }
+
+fn drone_safety(state: &[f64], destination: &Vector3<f64>) -> f64 {
+    let t = Vector3::new(state[0],state[1],state[2]);
+    1./(destination-t).norm()
+}
     
+
 fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
     let mut n = 0.0;
     for i in 0..7 {
@@ -124,6 +136,89 @@ fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
 fn rotation_cost(current_rotation: &UnitQuaternion<f64>, desired_rotation: &UnitQuaternion<f64>) -> f64 {
     let a = current_rotation.angle_to(desired_rotation);
     a*a
+}
+
+fn drone_plane_cost(state: &[f64], destination: &Vector3<f64>)->(f64,f64){
+    let p1 = Vector3::new(0.5,-0.5,-1.5);
+    let p2 = Vector3::new(0.5,0.1,-1.5);
+    let p3 = Vector3::new(0.5,0.1,0.5);
+    let p4 = Vector3::new(0.5,-0.5,0.5);
+    let mut v=Vector3::new(1.,0.,0.);
+    v=v/v.norm();
+    let drone = Vector3::new(state[0],state[1],state[2]);
+
+    let (occlusion_dist,safety_dist) = get_collision(&v,&p1,&p2,&p3,&p4,&drone,&destination);
+    
+    let occlusion_cost = (-occlusion_dist+0.1).max(0.).powi(2);
+    let safety_cost = 1./(safety_dist.powi(8))*(0.15_f64).powi(8)/25.;
+    (occlusion_cost,safety_cost)
+}
+
+fn get_2D(R: &Rotation3<f64>, p: &Vector3<f64>)->(f64,f64){
+    let v = R*p;
+    (v[0],v[1])
+}
+
+fn get_3D(R: &Rotation3<f64>, p: &(f64,f64),normal:&Vector3<f64>, plane_point:&Vector3<f64>)->Vector3<f64>{
+    line_plane_collision(normal, plane_point, normal, &(R.inverse() * Vector3::new(p.0,p.1,0.)))
+}
+
+fn get_norm_rot(v:&Vector3<f64>) -> Rotation3<f64>{
+    let ref_vec = Vector3::new(0.,0.,1.);
+    let norm_v = Unit::new_normalize(v.cross(&ref_vec));
+    Rotation3::from_axis_angle(&norm_v, ref_vec.angle(&v))
+}
+
+fn line_plane_collision(plane_normal:&Vector3<f64>, plane_point:&Vector3<f64>, ray_direction:&Vector3<f64>, ray_point:&Vector3<f64>) -> Vector3<f64>{
+	let ndotu = plane_normal.dot(ray_direction);
+	//if abs(ndotu) < epsilon:
+    //    println!("error");
+
+	let w = ray_point - plane_point;
+	let si = -plane_normal.dot(&w) / ndotu;
+	w + si * ray_direction + plane_point
+}
+
+fn get_collision(normal:&Vector3<f64>, p1:&Vector3<f64>, p2:&Vector3<f64>, p3:&Vector3<f64>, p4:&Vector3<f64>, d:&Vector3<f64>, ee:&Vector3<f64>) -> (f64,f64){
+    let psi = line_plane_collision(&normal,&p1,&(d-ee),&d);
+    let r = get_norm_rot(&normal);
+
+    let inter = get_2D(&r,&psi);
+    let inter_2d = Point::new(inter.0,inter.1);
+    let polygon = Polygon::new(
+        LineString::from(vec![get_2D(&r,&p1), get_2D(&r,&p2), get_2D(&r,&p3), get_2D(&r,&p4)]),
+        vec![],
+    );
+    let dist = inter_2d.euclidean_distance(&polygon);
+    let closest = polygon.closest_point(&inter_2d);
+
+    let mut closest_point_2d = Point::new(-1.,-1.);
+    match closest{
+        Closest::Intersection(p)=>{
+
+        },
+        Closest::SinglePoint(p)=>{
+            closest_point_2d = p;
+        },
+        Closest::Indeterminate=>{
+        }
+    };
+
+    let mut safety_dist = (d - psi).norm();
+    let mut occlusion_dist = inter_2d.euclidean_distance(&closest_point_2d);
+
+    if  dist==0. {
+        occlusion_dist = -occlusion_dist;
+    }
+    else{
+        safety_dist = (d - get_3D(&r, &(closest_point_2d.x(),closest_point_2d.y()), normal,p1)).norm()
+    }
+    //wall behind drone
+    if (psi-ee).dot(&(psi-d)) > 0.{
+        occlusion_dist = safety_dist;
+    }
+
+    (occlusion_dist,safety_dist)
 }
 
 fn robot_finite_difference(f: &dyn Fn(&[f64], &mut f64) -> Result<(), SolverError>, u: &[f64], grad: &mut [f64]) -> Result<(), SolverError> {
@@ -316,11 +411,15 @@ fn optimize_drone(drone_start: *mut [f64;4], position: &Vector3<f64>, orientatio
     let destination = position+velocity*0.25;
 
     let cost = |u: &[f64], c: &mut f64| {
-        *c =  drone_view_cost(&u,&destination);
-        *c += drone_distance_cost(&u,&destination,&velocity);
-        *c += drone_altitude_cost(&u,&destination);
-        *c += drone_angle_cost(&u,&destination, &orientation);
-        *c += drone_movement_cost(&u, &init_state, &lb, &ub);
+        let c1 =  100.*drone_view_cost(&u,&destination);
+        let c2 = 1.*drone_distance_cost(&u,&destination,&velocity);
+        let c3 = 10.*drone_altitude_cost(&u,&destination);
+        let c4 = 2.*drone_angle_cost(&u,&destination, &orientation);
+        let (c5,c6) = drone_plane_cost(&u,&destination); //occlusion cost, safety cost
+        let c7 = 1.*drone_safety(&u,&destination);
+        let c8 = drone_movement_cost(&u, &init_state, &lb, &ub);
+        let k = 1500.;
+        *c=c1+c2+c3+c4+k*c5+c6+c7+c8;
         Ok(())
     };
 
@@ -331,7 +430,7 @@ fn optimize_drone(drone_start: *mut [f64;4], position: &Vector3<f64>, orientatio
     let mut cur_cost = 0.0;
     cost(&drone_state, &mut cur_cost).unwrap();
     let problem = Problem::new(&bounds, dcost, cost);
-    let mut opt = PANOCOptimizer::new(problem, panoc_cache);//.with_max_duration(std::time::Duration::from_millis(10));
+    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(50);//.with_max_duration(std::time::Duration::from_millis(10));
 
     bounds.project(&mut drone_state);
     let _status = opt.solve(&mut drone_state);

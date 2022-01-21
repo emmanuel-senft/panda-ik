@@ -15,6 +15,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
 libc = "*"
 chrono = "*"
+geo = "0.18.0"
+geo-types = "0.7.2"
 
 [lib]
 name = "panda_ik"
