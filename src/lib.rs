@@ -113,6 +113,10 @@ fn drone_movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64])
     n
 }
 
+fn norm_angle(a: f64) -> f64{
+    -(-a+std::f64::consts::PI)%(2.*std::f64::consts::PI)+std::f64::consts::PI
+}
+
 fn drone_view_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
     //let theta = state[3];
     let angle2 = (state[1]-destination[1]).atan2(state[0]-destination[0]);
@@ -137,7 +141,7 @@ fn drone_angle_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQu
     //let angle2 = state[8].atan2(state[7]);
     //let n = (angle1-robot_rot_mat[1,0].atan2(robot_rot_mat[0,0])).powi(2);
     let theta=(state[1]-destination[1]).atan2(state[0]-destination[0]);
-    (theta-rotation.euler_angles().2).powi(2)
+    (norm_angle(theta)-rotation.euler_angles().2).powi(2)
 }
 
 fn drone_safety(state: &[f64], destination: &Vector3<f64>,robot_coll: &Polyline<f64>) -> f64 {
@@ -149,7 +153,7 @@ fn drone_safety(state: &[f64], destination: &Vector3<f64>,robot_coll: &Polyline<
 fn drone_robot_occlusion(state: &[f64], destination: &Vector3<f64>,robot_occ: &Polyline<f64>) -> f64 {
     let view = Segment::new(Otherpoint::new(state[0],state[1],state[2]),Otherpoint::new(destination[0],destination[1],destination[2]));
     let x = query::distance(&Isometry3::identity(), &view, &Isometry3::identity(),robot_occ);
-    println!("{}",x);
+    //println!("{}",x);
     (-(x/0.2).powi(6)).exp()
 }
     
@@ -350,7 +354,7 @@ pub extern "C" fn solve(robot_start: *mut [f64;7], drone_current: *mut [f64;4], 
     robot.update_transforms();
 
     let drone_state = optimize_drone(drone_current, drone_goal, &planes, &position, &orientation, &velocity, &mut errors,robot);
-    let robot_state = optimize_robot(robot_start, &position, &orientation, &mut errors, robot, name);
+    let robot_state = optimize_robot(robot_start, &position, &orientation, &mut errors, robot, name, drone_current);
     robot.set_joint_positions_clamped(&robot_state);
     robot.update_transforms();
     let trans = robot.find(&name).unwrap().world_transform().unwrap();
@@ -362,8 +366,9 @@ pub extern "C" fn solve(robot_start: *mut [f64;7], drone_current: *mut [f64;4], 
         *errors_start = errors;
     }
 }
-fn optimize_robot(robot_start: *mut [f64;7], position: &Vector3<f64>, orientation: &UnitQuaternion<f64>, errors: &mut [bool;4],robot: &mut Robot, name: &str) -> [f64; 7] {
+fn optimize_robot(robot_start: *mut [f64;7], position: &Vector3<f64>, orientation: &UnitQuaternion<f64>, errors: &mut [bool;4],robot: &mut Robot, name: &str, drone_c: *mut [f64;4]) -> [f64; 7] {
     let state = get_state().get_mut().unwrap();
+    let drone_current = unsafe{std::ptr::read(drone_c).clone()};
 
     let panoc_cache = &mut state.robot_panoc_cache;
 
@@ -403,14 +408,27 @@ fn optimize_robot(robot_start: *mut [f64;7], position: &Vector3<f64>, orientatio
     let init_state = unsafe{std::ptr::read(robot_start).clone()};
 
     let cost = |u: &[f64], c: &mut f64| {
+        for i in 0..7{
+            if u[i].is_nan(){
+                *c = 10.;
+                return Ok(())
+            }
+        }
         robot.set_joint_positions_clamped(&u);
         robot.update_transforms();
         let trans = robot.find(&name).unwrap().world_transform().unwrap();
+        let p1 = get_point(robot,"panda_joint1");
+        let p2 = get_point(robot,"panda_joint3");
+        let p3 = get_point(robot,"panda_joint4");
+        let p4 = get_point(robot,"panda_joint6");
+        let p5 = get_point(robot,"panda_joint7");
+        let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
 
         *c = 100.0 * position_cost(&trans.translation.vector, &position);
         *c += 10.*rotation_cost(&trans.rotation, &orientation);
         *c += movement_cost(&u, &init_state, &lb, &ub);
         *c += 0.1 * joint_limit_cost(&u, &lb, &ub);
+        *c += drone_robot_occlusion(&drone_current,&trans.translation.vector,&robot_occ);
         Ok(())
     };
 
@@ -456,7 +474,7 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
     let lb = [
         //Drone x,y,z,theta
         -2.,
-        -0.6,
+        -2.,
         0.2,
         -2.*std::f64::consts::PI
     ];
