@@ -53,8 +53,8 @@ int main(int argc, char **argv) {
 
     geometry_msgs::PoseStamped commandedPose = geometry_msgs::PoseStamped();
     commandedPose.header.frame_id = "panda_link0";
-    commandedPose.pose.position.x=.3;
-    commandedPose.pose.position.z=.3;
+    commandedPose.pose.position.x=.4;
+    commandedPose.pose.position.z=.4;
     commandedPose.pose.orientation.w=.1;
 
     geometry_msgs::Twist commandedVel = geometry_msgs::Twist();
@@ -73,6 +73,10 @@ int main(int argc, char **argv) {
     );
     vector<double> normals;
     vector<double> points;
+    vector<double> centers;
+    vector<double> orientations;
+    vector<double> half_axes;
+
     uint8_t plane_numbers = 0;
 
 
@@ -80,11 +84,28 @@ int main(int argc, char **argv) {
         [&](const drone_ros_msgs::Planes::ConstPtr& msg) {
             normals.clear();
             points.clear();
+            centers.clear();
+            orientations.clear();
+            half_axes.clear();
             plane_numbers=msg->normals.size();
             for(geometry_msgs::Point normal: msg->normals){
                 normals.push_back(normal.x);
                 normals.push_back(normal.y);
                 normals.push_back(normal.z);
+            }
+            for(geometry_msgs::Pose pose: msg->poses){
+                centers.push_back(pose.position.x);
+                centers.push_back(pose.position.y);
+                centers.push_back(pose.position.z);
+                orientations.push_back(pose.orientation.x);
+                orientations.push_back(pose.orientation.y);
+                orientations.push_back(pose.orientation.z);
+                orientations.push_back(pose.orientation.w);
+            }
+            for(geometry_msgs::Vector3 half_axe: msg->half_axes){
+                half_axes.push_back(half_axe.x);
+                half_axes.push_back(half_axe.y);
+                half_axes.push_back(half_axe.z);
             }
             for(geometry_msgs::Polygon poly: msg->planes){
                 for(geometry_msgs::Point32 p: poly.points){
@@ -147,7 +168,7 @@ int main(int argc, char **argv) {
         //robot error, robot out of time, drone error, drone out of time
         std::array<bool, 4> errors = {0,0,0,0};
         solve(robot_state.data(), drone_current.data(), drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
-              velocity.data(), errors.data(), &normals[0], &points[0],&plane_numbers);
+              velocity.data(), errors.data(), &normals[0], &points[0],&centers[0],&orientations[0],&half_axes[0],&plane_numbers);
         if(errors[0]){
             robot_state=joint_angles;
         }

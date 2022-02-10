@@ -1,11 +1,15 @@
 extern crate nalgebra as na;
-use na::{Vector3, UnitQuaternion, Quaternion, Rotation3, Unit};
+use na::{Vector3, UnitQuaternion, Quaternion, Rotation3, Unit, Translation3};
 use std::convert::TryFrom;
 
-use ncollide3d::math::Point as Otherpoint;
+use ncollide3d::math::Point as OtherPoint;
+use ncollide3d::nalgebra::Translation3 as OtherTranslation;
+use ncollide3d::nalgebra::UnitQuaternion as OtherUnitQuaternion;
+use ncollide3d::nalgebra::Quaternion as OtherQuaternion;
 use ncollide3d::math::Vector as OtherVector;
-use ncollide3d::shape::{Polyline,Segment,Ball};
+use ncollide3d::shape::{Polyline,Segment,Ball,Cuboid};
 use ncollide3d::query;
+use ncollide3d::query::ClosestPoints;
 use ncollide3d::nalgebra::geometry::Isometry3;
 
 use optimization_engine::constraints::{Constraint, Rectangle};
@@ -21,11 +25,6 @@ use libc::c_char;
 use std::ffi::CStr;
 use std::str;
 
-use geo_types::{Point,LineString, Polygon};
-use geo::Closest;
-use geo::algorithm::euclidean_distance::EuclideanDistance;
-use geo::algorithm::closest_point::ClosestPoint;
-
 use k::*;
 
 type Robot = k::Chain<f64>;
@@ -38,9 +37,9 @@ struct SolverState {
 
 struct Plane {
     normal : Vector3<f64>,
-    points : [Vector3<f64>;4],
-    rot : Rotation3<f64>,
-    poly : Polygon<f64>
+    cube : Cuboid<f64>,
+    trans : Isometry3<f64>,
+    polyline : Polyline<f64>
 }
 
 static mut STATE: Option<Mutex<SolverState>> = None;
@@ -108,7 +107,7 @@ fn movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f6
 fn drone_movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f64 {
     let mut n = 0.0;
     for i in 0..3 {
-        n+=100000.*(state[i]-init_state[i]).powi(6);
+        n+=100000.*(2.*(state[i]-init_state[i])).powi(6);
     }
     n
 }
@@ -117,16 +116,20 @@ fn norm_angle(a: f64) -> f64{
     -(-a+std::f64::consts::PI)%(2.*std::f64::consts::PI)+std::f64::consts::PI
 }
 
+fn diff_angle(a1: f64, a2: f64)-> f64 {
+    norm_angle(a1-a2)
+}
+
 fn drone_view_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
     //let theta = state[3];
-    let angle2 = (state[1]-destination[1]).atan2(state[0]-destination[0]);
     //let n=(theta.cos()*(state[1]-destination[1])-theta.sin()*(state[0]-destination[0])).powi(2)+((theta-angle2-std::f64::consts::PI)/(2.*std::f64::consts::PI)).powi(2);
     //(theta-std::f64::consts::PI/2.).powi(2)
+    let angle2 = (state[1]-destination[1]).atan2(state[0]-destination[0]);
     ((state[3]-angle2-std::f64::consts::PI)/(2.*std::f64::consts::PI)).powi(2)
 }
 
 fn drone_distance_cost(state: &[f64], destination: &Vector3<f64>, velocity: &Vector3<f64>) -> f64 {
-    let n = ((state[0]-destination[0]).powi(2)+(state[1]-destination[1]).powi(2)-(0.7+velocity.norm()/4.).powi(2)).powi(2);
+    let n = ((state[0]-destination[0]).powi(2)+(state[1]-destination[1]).powi(2)-0.5).powi(2);
     n
 }
 
@@ -136,7 +139,38 @@ fn drone_altitude_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
     //let n = (state[7]-destination[0]-distance*angle.cos()).powi(2) + (state[8]-destination[1]-distance*angle.sin()).powi(2) + (state[9]-destination[2]-theta.sin()*distance).powi(2) + (state[10]-std::f64::consts::PI-angle).powi(2); // (state[10] - state[7].atan2(state[8])).powi(2)
 }
 
-fn drone_angle_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQuaternion<f64>) -> f64 {
+fn drone_polar_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQuaternion<f64>, planes: &Vec<Plane>) -> f64 {
+    //Closest plane
+    let ee_ball = Ball::new(0.01);
+    let trans = Isometry3::new(OtherVector::new(destination[0], destination[1], destination[2]), na::zero());
+    if planes.len() > 0 {
+        let mut index = 0;
+        let mut min_dist = f64::MAX;
+        for i in 0..planes.len(){
+            let dist = query::distance(&planes[i].trans, &planes[i].cube, &trans,&ee_ball);
+            if dist < min_dist {
+                min_dist = dist;
+                index = i;
+            }
+        }
+        let drone_pose = Vector3::new(state[0],state[1],destination[2]);
+        let cp = query::closest_points(&planes[index].trans, &planes[index].cube, &trans, &ee_ball,200.);
+        let mut closest_point = Vector3::new(-1.,-1.,-1.);
+        match cp{
+                ClosestPoints::Intersecting=>{
+            },
+                ClosestPoints::WithinMargin(p1,p2)=>{
+                    closest_point[0] = p1[0];
+                    closest_point[1] = p1[1];
+                    closest_point[2] = p1[2];
+            },
+            ClosestPoints::Disjoint=>{
+            }
+        };
+        let angle = (destination-closest_point).angle(&(drone_pose-destination)).abs();
+        return (angle-std::f64::consts::PI*3./8.).powi(2);
+    }
+
     //let angle1 = destination[1].atan2(destination[0]);
     //let angle2 = state[8].atan2(state[7]);
     //let n = (angle1-robot_rot_mat[1,0].atan2(robot_rot_mat[0,0])).powi(2);
@@ -144,14 +178,14 @@ fn drone_angle_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQu
     (norm_angle(theta)-rotation.euler_angles().2).powi(2)
 }
 
-fn drone_safety(state: &[f64], destination: &Vector3<f64>,robot_coll: &Polyline<f64>) -> f64 {
+fn drone_safety(state: &[f64],robot_coll: &Polyline<f64>) -> f64 {
     let drone_ball = Ball::new(0.10);
     let x = query::distance(&Isometry3::new(OtherVector::new(state[0], state[1], state[2]), na::zero()), &drone_ball, &Isometry3::identity(),robot_coll);
     (-(x/0.2).powi(6)).exp()
 }
 
 fn drone_robot_occlusion(state: &[f64], destination: &Vector3<f64>,robot_occ: &Polyline<f64>) -> f64 {
-    let view = Segment::new(Otherpoint::new(state[0],state[1],state[2]),Otherpoint::new(destination[0],destination[1],destination[2]));
+    let view = Segment::new(OtherPoint::new(state[0],state[1],state[2]),OtherPoint::new(destination[0],destination[1],destination[2]));
     let x = query::distance(&Isometry3::identity(), &view, &Isometry3::identity(),robot_occ);
     //println!("{}",x);
     (-(x/0.2).powi(6)).exp()
@@ -172,81 +206,28 @@ fn rotation_cost(current_rotation: &UnitQuaternion<f64>, desired_rotation: &Unit
     a*a
 }
 
-fn drone_plane_cost(state: &[f64], destination: &Vector3<f64>, planes: &Vec<Plane>)->(f64,f64){
-    let drone = Vector3::new(state[0],state[1],state[2]);
-
-    let mut occlusion_cost = 0.;
+fn drone_plane_collision_cost(state: &[f64], planes: &Vec<Plane>)->f64{
     let mut safety_cost = 0.;
+    let drone_ball = Ball::new(0.05);
+    let trans = Isometry3::new(OtherVector::new(state[0], state[1], state[2]), na::zero());
     for i in 0..planes.len(){
-        let (occlusion_dist,safety_dist) = get_collision(&planes[i],&drone,&destination);
-        occlusion_cost += (-occlusion_dist+0.1).max(0.).powi(2);
-        safety_cost += 1./(safety_dist.powi(8))*(0.15_f64).powi(8)/25.;
+        let safety_dist = query::distance(&planes[i].trans, &planes[i].cube, &trans,&drone_ball);
+        safety_cost += (-(safety_dist/0.1).powi(6)).exp();
     }
-    (occlusion_cost,safety_cost)
+    safety_cost
 }
 
-fn get_2D(R: &Rotation3<f64>, p: &Vector3<f64>)->(f64,f64){
-    let v = R*p;
-    (v[0],v[1])
-}
-
-fn get_3D(R: &Rotation3<f64>, p: &(f64,f64),normal:&Vector3<f64>, plane_point:&Vector3<f64>)->Vector3<f64>{
-    line_plane_collision(normal, plane_point, normal, &(R.inverse() * Vector3::new(p.0,p.1,0.)))
-}
-
-fn get_norm_rot(v:&Vector3<f64>) -> Rotation3<f64>{
-    let ref_vec = Vector3::new(0.,0.,1.);
-    let norm_v = Unit::new_normalize(v.cross(&ref_vec));
-    Rotation3::from_axis_angle(&norm_v, ref_vec.angle(&v))
-}
-
-fn line_plane_collision(plane_normal:&Vector3<f64>, plane_point:& Vector3<f64>, ray_direction:&Vector3<f64>, ray_point:&Vector3<f64>) -> Vector3<f64>{
-	let ndotu = plane_normal.dot(ray_direction);
-	//if abs(ndotu) < epsilon:
-    //    println!("error");
-
-	let w = ray_point - plane_point;
-	let si = -plane_normal.dot(&w) / ndotu;
-	w + si * ray_direction + plane_point
-}
-
-fn get_collision(plane:&Plane, d:&Vector3<f64>, ee:&Vector3<f64>) -> (f64,f64){
-    let normal = plane.normal;
-    let points = plane.points;
-    let psi = line_plane_collision(&normal,&points[0],&(d-ee),&d);
-
-    let inter = get_2D(&plane.rot,&psi);
-    let inter_2d = Point::new(inter.0,inter.1);
-    let dist = inter_2d.euclidean_distance(&plane.poly);
-    let closest = plane.poly.closest_point(&inter_2d);
-
-    let mut closest_point_2d = Point::new(-1.,-1.);
-    match closest{
-        Closest::Intersection(p)=>{
-
-        },
-        Closest::SinglePoint(p)=>{
-            closest_point_2d = p;
-        },
-        Closest::Indeterminate=>{
+fn drone_plane_occlusion_cost(state: &[f64], destination: &Vector3<f64>, planes: &Vec<Plane>)->f64{
+    let mut occlusion_cost = 0.;
+    let segment = Segment::new(OtherPoint::new(state[0],state[1],state[2]),OtherPoint::new(destination[0],destination[1],destination[2]));
+    for i in 0..planes.len(){
+        let mut occlusion_dist = query::distance(&planes[i].trans, &planes[i].cube, &Isometry3::identity(),&segment);
+        if occlusion_dist == 0.{
+            occlusion_dist = -query::distance(&Isometry3::identity(), &planes[i].polyline, &Isometry3::identity(),&segment);
         }
-    };
-
-    let mut safety_dist = (d - psi).norm();
-    let mut occlusion_dist = inter_2d.euclidean_distance(&closest_point_2d);
-
-    if  dist==0. {
-        occlusion_dist = -occlusion_dist;
+        occlusion_cost += (-occlusion_dist+0.05).max(0.).powi(2);
     }
-    else{
-        safety_dist = (d - get_3D(&plane.rot, &(closest_point_2d.x(),closest_point_2d.y()), &normal,&points[0])).norm()
-    }
-    //wall behind drone
-    if (psi-ee).dot(&(psi-d)) > 0.{
-        occlusion_dist = safety_dist;
-    }
-
-    (occlusion_dist,safety_dist)
+    occlusion_cost
 }
 
 fn robot_finite_difference(f: &dyn Fn(&[f64], &mut f64) -> Result<(), SolverError>, u: &[f64], grad: &mut [f64]) -> Result<(), SolverError> {
@@ -291,43 +272,53 @@ fn drone_finite_difference(f: &dyn Fn(&[f64], &mut f64) -> Result<(), SolverErro
     Ok(())
 }
 
-fn get_point(robot: &Robot, name: &str) -> Otherpoint<f64>{
+fn get_point(robot: &Robot, name: &str) -> OtherPoint<f64>{
     let iso = robot.find(name).unwrap().world_transform().unwrap();
-    Otherpoint::new(iso.translation.x,iso.translation.y,iso.translation.z)
+    OtherPoint::new(iso.translation.x,iso.translation.y,iso.translation.z)
 }
 
 #[no_mangle]
 pub extern "C" fn solve(robot_start: *mut [f64;7], drone_current: *mut [f64;4], drone_goal: *mut [f64;4], link_name: *mut c_char, 
                         goal_x: *mut [f64;3], goal_q: *mut [f64;4], vel: *mut [f64;3], errors_start: *mut [bool;4],
-                        plane_normals_ptr: *mut f64, plane_points_ptr: *mut f64, plane_number_ptr: *mut u8) {
+                        plane_normals_ptr: *mut f64, plane_points_ptr: *mut f64, plane_centers_ptr: *mut f64,
+                        plane_orientations_ptr: *mut f64, plane_half_axes_ptr: *mut f64, plane_number_ptr: *mut u8) {
     
     let plane_number = unsafe{usize::try_from(std::ptr::read(plane_number_ptr).clone()).unwrap()};
     let normals;
     let points;
+    let centers;
+    let orientations;
+    let half_axes;
     unsafe {
         normals = Vec::from(std::slice::from_raw_parts(plane_normals_ptr, plane_number*3));
         points = Vec::from(std::slice::from_raw_parts(plane_points_ptr, plane_number*12));
+        centers = Vec::from(std::slice::from_raw_parts(plane_centers_ptr, plane_number*3));
+        orientations = Vec::from(std::slice::from_raw_parts(plane_orientations_ptr, plane_number*4));
+        half_axes = Vec::from(std::slice::from_raw_parts(plane_half_axes_ptr, plane_number*3));
     }
     let mut planes = Vec::new();
     for i in 0..plane_number {
-        let p1 = Vector3::new(points[12*i],points[12*i+1],points[12*i+2]);
-        let p2 = Vector3::new(points[12*i+3],points[12*i+4],points[12*i+5]);
-        let p3 = Vector3::new(points[12*i+6],points[12*i+7],points[12*i+8]);
-        let p4 = Vector3::new(points[12*i+9],points[12*i+10],points[12*i+11]);
-        let points = [p1,p2,p3,p4];
         let mut v=Vector3::new(normals[3*i],normals[3*i+1],normals[3*i+2]);
         v=v/v.norm();
 
-        let r = get_norm_rot(&v);
-        let poly = Polygon::new(
-            LineString::from(vec![get_2D(&r,&p1), get_2D(&r,&p2), get_2D(&r,&p3), get_2D(&r,&p4)]),
-            vec![],
-        );
+        let op1 = OtherPoint::new(points[12*i],points[12*i+1],points[12*i+2]);
+        let op2 = OtherPoint::new(points[12*i+3],points[12*i+4],points[12*i+5]);
+        let op3 = OtherPoint::new(points[12*i+6],points[12*i+7],points[12*i+8]);
+        let op4 = OtherPoint::new(points[12*i+9],points[12*i+10],points[12*i+11]);
+        let polyline = Polyline::new(vec![op1,op2,op3,op4],None);
 
-        let plane = Plane {normal: v,points: points, rot : r, poly : poly};
+        let center=OtherTranslation::new(centers[3*i],centers[3*i+1],centers[3*i+2]);
+        let rotation=OtherUnitQuaternion::from_quaternion(OtherQuaternion::new(orientations[4*i+3],orientations[4*i],orientations[4*i+1],orientations[4*i+2]));
+        let half_axes=OtherVector::new(half_axes[3*i],half_axes[3*i+1],half_axes[3*i+2]);
+
+        let cube = Cuboid::new(half_axes);   
+        let trans = Isometry3::from_parts(center,rotation);
+
+        let plane = Plane {normal: v, cube : cube, trans : trans, polyline : polyline};
 
         planes.push(plane);
-    }                       
+    }    
+
     let position = unsafe{Vector3::from(std::ptr::read(goal_x))};
     let orientation = unsafe{UnitQuaternion::from_quaternion(Quaternion::from(std::ptr::read(goal_q)))};
     let velocity = unsafe{Vector3::from(std::ptr::read(vel))};
@@ -417,18 +408,11 @@ fn optimize_robot(robot_start: *mut [f64;7], position: &Vector3<f64>, orientatio
         robot.set_joint_positions_clamped(&u);
         robot.update_transforms();
         let trans = robot.find(&name).unwrap().world_transform().unwrap();
-        let p1 = get_point(robot,"panda_joint1");
-        let p2 = get_point(robot,"panda_joint3");
-        let p3 = get_point(robot,"panda_joint4");
-        let p4 = get_point(robot,"panda_joint6");
-        let p5 = get_point(robot,"panda_joint7");
-        let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
 
         *c = 100.0 * position_cost(&trans.translation.vector, &position);
         *c += 10.*rotation_cost(&trans.rotation, &orientation);
         *c += movement_cost(&u, &init_state, &lb, &ub);
         *c += 0.1 * joint_limit_cost(&u, &lb, &ub);
-        *c += drone_robot_occlusion(&drone_current,&trans.translation.vector,&robot_occ);
         Ok(())
     };
 
@@ -501,14 +485,14 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
     let cost = |u: &[f64], c: &mut f64| {
         let c1 =  100.*drone_view_cost(&u,&destination);
         let c2 = 1.*drone_distance_cost(&u,&destination,&velocity);
-        let c3 = 10.*drone_altitude_cost(&u,&destination);
-        let c4 = 2.*drone_angle_cost(&u,&destination, &orientation);
-        let (c5,c6) = drone_plane_cost(&u,&destination,&planes); //occlusion cost, safety cost
-        let c7 = 20.*drone_safety(&u,&destination,&robot_coll);
+        let c3 = 20.*drone_altitude_cost(&u,&destination);
+        let c4 = 2.*drone_polar_cost(&u,&destination, &orientation,&planes);
+        let c5 = 200. * drone_plane_occlusion_cost(&u,&destination,&planes); 
+        let c6 = drone_plane_collision_cost(&u,&planes); 
+        let c7 = 20.*drone_safety(&u,&robot_coll);
         let c8 = 20.*drone_robot_occlusion(&u,&destination,&robot_occ);
         let c9 = drone_movement_cost(&u, &drone_current, &lb, &ub);
-        let k = 1500.;
-        *c=c1+c2+c3+c4+k*c5+c6+c7+c8+c9;
+        *c=c1+c2+c3+c4+c5+c6+c7+c8+c9;
         Ok(())
     };
 
