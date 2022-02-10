@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <launch>
     <node pkg="panda_ik" type="panda_ik" name="panda_ik">
-        <param name="URDF" type="string" value="/home/senft/catkin_ws/src/drone-panda/urdfs/panda_arm_hand.urdf" />
+        <param name="URDF" type="string" value="$(find drone_panda)/urdfs/panda.urdf" />
     </node>
 </launch>
