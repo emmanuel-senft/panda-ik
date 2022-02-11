@@ -59,6 +59,9 @@ int main(int argc, char **argv) {
 
     geometry_msgs::Twist commandedVel = geometry_msgs::Twist();
 
+    geometry_msgs::PoseStamped droneCommandedPose = geometry_msgs::PoseStamped();
+    bool reaching_drone_pose=false;
+
     std::string frame_id = "panda_gripper_joint";
     bool initialized = false;
 
@@ -69,6 +72,13 @@ int main(int argc, char **argv) {
             commandedVel = msg->twist;
             frame_id = msg->header.frame_id;
             start = true;
+        }
+    );
+    ros::Subscriber poseSub = nh.subscribe<geometry_msgs::PoseStamped>("drone_goal", 1,
+        [&](const geometry_msgs::PoseStamped::ConstPtr& msg) {
+            droneCommandedPose = *msg;
+            reaching_drone_pose = true;
+            cout<<"Got pose"<<endl;
         }
     );
     vector<double> normals;
@@ -142,33 +152,57 @@ int main(int argc, char **argv) {
         bool valid_output = true;
         std::string name = "panda_gripper_joint";//msg->child_frame_id;
 
-        commandedPose.pose.position.x+=commandedVel.linear.x/freq;
-        commandedPose.pose.position.y+=commandedVel.linear.y/freq;
-        commandedPose.pose.position.z+=commandedVel.linear.z/freq;
-        
-        KDL::Rotation robot_rot = KDL::Rotation::Quaternion(commandedPose.pose.orientation.x,commandedPose.pose.orientation.y,commandedPose.pose.orientation.z,commandedPose.pose.orientation.w);
-        KDL::Rotation motion = KDL::Rotation::RPY(commandedVel.angular.x/freq,commandedVel.angular.y/freq,commandedVel.angular.z/freq);
-        (motion*robot_rot).GetQuaternion(commandedPose.pose.orientation.x,commandedPose.pose.orientation.y,commandedPose.pose.orientation.z,commandedPose.pose.orientation.w);
-        
-        double norm = sqrt(commandedPose.pose.orientation.x*commandedPose.pose.orientation.x+commandedPose.pose.orientation.y*commandedPose.pose.orientation.y+commandedPose.pose.orientation.z*commandedPose.pose.orientation.z+commandedPose.pose.orientation.w*commandedPose.pose.orientation.w);
-        if (norm != 1){
-            commandedPose.pose.orientation.x /= norm;
-            commandedPose.pose.orientation.y /= norm;
-            commandedPose.pose.orientation.z /= norm;
-            commandedPose.pose.orientation.w /= norm;
-        }
+        std::array<bool, 4> errors = {0,0,0,0};
 
-        std::array<double, 3> position = {commandedPose.pose.position.x, commandedPose.pose.position.y, commandedPose.pose.position.z};
-        std::array<double, 4> orientation = {commandedPose.pose.orientation.x, commandedPose.pose.orientation.y, commandedPose.pose.orientation.z, commandedPose.pose.orientation.w};
-        std::array<double, 3> velocity = {commandedVel.linear.x, commandedVel.linear.y,commandedVel.linear.z};
-        
         std::array<double, 7> robot_state = joint_angles;
+        std::array<double, 3> position = {commandedPose.pose.position.x, commandedPose.pose.position.y, commandedPose.pose.position.z};
+            
         std::array<double, 4> drone_goal = last_drone_goal;
+        if(reaching_drone_pose){
+            std::array<double, 4> drone_goal;
+            KDL::Rotation drone_goal_rot = KDL::Rotation::Quaternion(droneCommandedPose.pose.orientation.x,droneCommandedPose.pose.orientation.y,droneCommandedPose.pose.orientation.z,droneCommandedPose.pose.orientation.w);
+            double r, p, y;
+            drone_goal_rot.GetRPY(r, p, y);
+            drone_goal[0]=droneCommandedPose.pose.position.x;
+            drone_goal[1]=droneCommandedPose.pose.position.y;
+            drone_goal[2]=droneCommandedPose.pose.position.z;
+            drone_goal[3]=y;
+            double threshold = .1;
+            reaching_drone_pose=false;
+            for(int i=0;i<4;i++){
+                if(pow(drone_goal[i]-drone_current[i],2)>threshold)
+                    reaching_drone_pose = true;
+            }
+            if(reaching_drone_pose)
+                solveDroneOnly(robot_state.data(), drone_current.data(), drone_goal.data(), last_drone_goal.data(), errors.data(), 
+            &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers);
+        }
+        if(!reaching_drone_pose){
+            commandedPose.pose.position.x+=commandedVel.linear.x/freq;
+            commandedPose.pose.position.y+=commandedVel.linear.y/freq;
+            commandedPose.pose.position.z+=commandedVel.linear.z/freq;
+            
+            KDL::Rotation robot_rot = KDL::Rotation::Quaternion(commandedPose.pose.orientation.x,commandedPose.pose.orientation.y,commandedPose.pose.orientation.z,commandedPose.pose.orientation.w);
+            KDL::Rotation motion = KDL::Rotation::RPY(commandedVel.angular.x/freq,commandedVel.angular.y/freq,commandedVel.angular.z/freq);
+            (motion*robot_rot).GetQuaternion(commandedPose.pose.orientation.x,commandedPose.pose.orientation.y,commandedPose.pose.orientation.z,commandedPose.pose.orientation.w);
+            
+            double norm = sqrt(commandedPose.pose.orientation.x*commandedPose.pose.orientation.x+commandedPose.pose.orientation.y*commandedPose.pose.orientation.y+commandedPose.pose.orientation.z*commandedPose.pose.orientation.z+commandedPose.pose.orientation.w*commandedPose.pose.orientation.w);
+            if (norm != 1){
+                cout<<"Renormalization"<<endl;
+                commandedPose.pose.orientation.x /= norm;
+                commandedPose.pose.orientation.y /= norm;
+                commandedPose.pose.orientation.z /= norm;
+                commandedPose.pose.orientation.w /= norm;
+            }
 
         //robot error, robot out of time, drone error, drone out of time
-        std::array<bool, 4> errors = {0,0,0,0};
-        solve(robot_state.data(), drone_current.data(), drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
-              velocity.data(), errors.data(), &normals[0], &points[0],&centers[0],&orientations[0],&half_axes[0],&plane_numbers);
+            std::array<double, 4> orientation = {commandedPose.pose.orientation.x, commandedPose.pose.orientation.y, commandedPose.pose.orientation.z, commandedPose.pose.orientation.w};
+            std::array<double, 3> velocity = {commandedVel.linear.x, commandedVel.linear.y,commandedVel.linear.z};
+        
+            solve(robot_state.data(), drone_current.data(), last_drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
+              velocity.data(), errors.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers);
+        }
+
         if(errors[0]){
             robot_state=joint_angles;
         }
@@ -176,10 +210,13 @@ int main(int argc, char **argv) {
             ;
         }
         if(errors[2]){
-            drone_goal=last_drone_goal;
+            std::cout<<"drone error"<<std::endl;
+            drone_current=last_drone_goal;
         }
-        if(errors[3])
-            ;
+        if(errors[3]){
+            drone_current=last_drone_goal;
+            std::cout<<"drone timeout"<<std::endl;
+        }
         commandedPose.header.stamp = ros::Time::now();
         panda_pub.publish(commandedPose);
 
@@ -190,10 +227,9 @@ int main(int argc, char **argv) {
                 }
             }
             if(!valid_output){
-                if(fabs(commandedPose.pose.position.x - position[0])<.05 && fabs(commandedPose.pose.position.y - position[1])<.05 && fabs(commandedPose.pose.position.z - position[2])<.05){
-                    valid_output = true;
-                    std::cout<<"corrected"<<std::endl;
-                }
+               if(fabs(commandedPose.pose.position.x - position[0])<.05 && fabs(commandedPose.pose.position.y - position[1])<.05 && fabs(commandedPose.pose.position.z - position[2])<.05){
+                   valid_output = true;
+               }
             }
         }
         if(!valid_output)
@@ -206,13 +242,13 @@ int main(int argc, char **argv) {
 
         tf2::Quaternion q(0,0,0,1);
 
-        q.setEuler(0,0,drone_goal[3]);
+        q.setEuler(0,0,drone_current[3]);
         auto drone_msg = geometry_msgs::PoseStamped();
         drone_msg.header.frame_id = "panda_link0";
         drone_msg.header.stamp = ros::Time(0);
-        drone_msg.pose.position.x=drone_goal[0];
-        drone_msg.pose.position.y=drone_goal[1];
-        drone_msg.pose.position.z=drone_goal[2];
+        drone_msg.pose.position.x=drone_current[0];
+        drone_msg.pose.position.y=drone_current[1];
+        drone_msg.pose.position.z=drone_current[2];
         drone_msg.pose.orientation.x=q[0];
         drone_msg.pose.orientation.y=q[1];
         drone_msg.pose.orientation.z=q[2];
@@ -226,7 +262,8 @@ int main(int argc, char **argv) {
             now = std::chrono::system_clock::now();
         }
         last_msg_time = now;
-        last_drone_goal = drone_goal;
+        last_drone_goal = drone_current;
+
         ros::spinOnce();
         loop_rate.sleep();
     }
