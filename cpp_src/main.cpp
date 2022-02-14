@@ -188,7 +188,7 @@ int main(int argc, char **argv) {
             
             double norm = sqrt(commandedPose.pose.orientation.x*commandedPose.pose.orientation.x+commandedPose.pose.orientation.y*commandedPose.pose.orientation.y+commandedPose.pose.orientation.z*commandedPose.pose.orientation.z+commandedPose.pose.orientation.w*commandedPose.pose.orientation.w);
             if (norm != 1){
-                cout<<"Renormalization"<<endl;
+                //cout<<"Renormalization"<<endl;
                 commandedPose.pose.orientation.x /= norm;
                 commandedPose.pose.orientation.y /= norm;
                 commandedPose.pose.orientation.z /= norm;

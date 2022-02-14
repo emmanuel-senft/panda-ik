@@ -108,12 +108,12 @@ fn movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f6
     n
 }
 
-fn drone_movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f64 {
+fn drone_movement_cost(state: &[f64], init_state: &[f64], margin: f64, k: i32) -> f64 {
     let mut n = 0.0;
     for i in 0..3 {
-        n+=get_gaussian(state[i]-init_state[i],0.05,6);
+        n+=get_gaussian(state[i]-init_state[i],margin,k);
     }
-    n+=get_gaussian(norm_angle(state[3]-init_state[3]),0.2,6);
+    n+=get_gaussian(norm_angle(state[3]-init_state[3]),10.*margin,k);
     1.-n/4.
 }
 
@@ -485,7 +485,7 @@ fn optimize_robot(robot_start: *mut [f64;7], position: &Vector3<f64>, orientatio
     let mut cur_cost: f64 = 0.0;
     cost(&robot_state, &mut cur_cost).unwrap();
     let problem = Problem::new(&bounds, dcost, cost);
-    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(100);//.with_max_duration(std::time::Duration::from_millis(7));
+    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(50).with_max_duration(std::time::Duration::from_millis(7));
 
     bounds.project(&mut robot_state);
     let _status = opt.solve(&mut robot_state);
@@ -527,7 +527,8 @@ fn get_drone_boundary()->([f64; 4],[f64; 4]) {
 fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<Plane>, position: &Vector3<f64>, orientation: &UnitQuaternion<f64>, velocity: &Vector3<f64>, errors: &mut [bool;4], robot: &mut Robot) -> [f64; 4] {
     let mut drone_state = unsafe{std::ptr::read(drone_goal).clone()};
     let drone_current = unsafe{std::ptr::read(drone_c).clone()};
-    let _init_state = unsafe{std::ptr::read(drone_goal).clone()};
+    let last_command = unsafe{std::ptr::read(drone_goal).clone()};
+    let _init_state = unsafe{std::ptr::read(drone_c).clone()};
 
     let (ub,lb) = get_drone_boundary();
     let bounds = Rectangle::new(Some(&lb), Some(&ub));
@@ -550,7 +551,8 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
         // Movement costs
         let c1 = drone_plane_collision_cost(&u,&planes); 
         let c2 = drone_safety(&u,&robot_coll);
-        let c3 = 10.*drone_movement_cost(&u, &drone_current, &lb, &ub);
+        let c3 = 50.*drone_movement_cost(&u, &drone_current, 0.3, 4);
+        let c10 = 10.*drone_movement_cost(&u, &last_command, 0.01,6);
 
         //View costs
         let c4 =  100.*drone_view_cost(&u,&destination);
@@ -559,7 +561,7 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
         let c7 = 2.*drone_polar_cost(&u,&destination, &orientation,&planes);
         let c8 = 200. * drone_plane_occlusion_cost(&u,&destination,&planes); 
         let c9 = 20.*drone_robot_occlusion(&u,&destination,&robot_occ);
-        *c=c1+c2+c3+c4+c5+c6+c7+c8+c9;
+        *c=c1+c2+c3+c4+c5+c6+c7+c8+c9+c10;
         Ok(())
     };
 
@@ -570,7 +572,7 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
     let mut cur_cost = 0.0;
     cost(&drone_state, &mut cur_cost).unwrap();
     let problem = Problem::new(&bounds, dcost, cost);
-    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(100);//.with_max_duration(std::time::Duration::from_millis(10));
+    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(50).with_max_duration(std::time::Duration::from_millis(10));
 
     bounds.project(&mut drone_state);
     let _status = opt.solve(&mut drone_state);
@@ -610,9 +612,10 @@ fn optimize_drone_goal(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], last_dro
     let cost = |u: &[f64], c: &mut f64| {
         let c1 = drone_plane_collision_cost(&u,&planes); 
         let c2 = drone_safety(&u,&robot_coll);
-        let c3 = 10.*drone_movement_cost(&u, &drone_current, &lb, &ub);
-        let c4 = drone_goal_cost(&u, &drone_goal, &lb, &ub);
-        *c=c1+c2+c3+c4;
+        let c3 = 10.*drone_movement_cost(&u, &drone_current, 0.3,2);
+        let c4 = 10.*drone_movement_cost(&u, &last_drone_goal, 0.01,6);
+        let c5 = drone_goal_cost(&u, &drone_goal, &lb, &ub);
+        *c=c1+c2+c3+c4+c5;
         Ok(())
     };
 
