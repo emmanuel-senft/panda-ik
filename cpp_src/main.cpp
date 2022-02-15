@@ -17,14 +17,58 @@
 #include <iostream>
 #include <chrono>
 #include <math.h>
+#include <boost/thread/thread.hpp>
 
 std::array<double, 7> joint_angles = {0,0,0,-1.5,0,1.5,0};
 using namespace std;
 
+void opt(const bool* initialized, geometry_msgs::PoseStamped* commandedPose_in, geometry_msgs::Twist* commandedVel_in, const double* plane_normals, const double* plane_points, const double* plane_centers, const double* plane_orientations, const double* plane_half_axes, const uint8_t* plane_number) {
+    ros::NodeHandle nh("~");
+    ros::Publisher alternate_drone_pub = nh.advertise<geometry_msgs::PoseStamped>("alternate_drone_output", 1);
+    geometry_msgs::Twist commandedVel = *commandedVel_in;
+    geometry_msgs::PoseStamped commandedPose = *commandedPose_in;
+    std::array<double, 7> robot_state = {0,0,0,-1.5,0,1.5,0}  ;
+    ros::Subscriber jaSub = nh.subscribe<std_msgs::Float64MultiArray>("output", 1,
+        [&](const std_msgs::Float64MultiArray::ConstPtr& msg) {
+            std::copy_n((msg->data).begin(), 7, robot_state.begin());
+        }
+    );
+
+    ros::Rate loop_rate(20);
+    while (ros::ok()){
+        std::string name = "panda_gripper_joint";//msg->child_frame_id;
+
+        std::array<double, 3> position = {commandedPose.pose.position.x, commandedPose.pose.position.y, commandedPose.pose.position.z};
+        std::array<double, 4> orientation = {commandedPose.pose.orientation.x, commandedPose.pose.orientation.y, commandedPose.pose.orientation.z, commandedPose.pose.orientation.w};
+        std::array<double, 3> velocity = {commandedVel.linear.x, commandedVel.linear.y,commandedVel.linear.z};
+        std::array<double, 4> drone_goal = {1.0,1.0,0.5,3.0};
+        std::array<bool, 4> errors = {0,0,0,0};
+        solve_global(robot_state.data(), drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
+                    velocity.data(), errors.data(), plane_normals, plane_points, plane_centers, plane_orientations, plane_half_axes, plane_number);
+
+        tf2::Quaternion q(0,0,0,1);
+
+        q.setEuler(0,0,drone_goal[3]);
+        auto alternate_drone_msg = geometry_msgs::PoseStamped();
+        alternate_drone_msg.header.frame_id = "panda_link0";
+        alternate_drone_msg.header.stamp = ros::Time(0);
+        alternate_drone_msg.pose.position.x=drone_goal[0];
+        alternate_drone_msg.pose.position.y=drone_goal[1];
+        alternate_drone_msg.pose.position.z=drone_goal[2];
+        alternate_drone_msg.pose.orientation.x=q[0];
+        alternate_drone_msg.pose.orientation.y=q[1];
+        alternate_drone_msg.pose.orientation.z=q[2];
+        alternate_drone_msg.pose.orientation.w=q[3];
+
+        alternate_drone_pub.publish(alternate_drone_msg);
+        ros::spinOnce();
+        loop_rate.sleep();
+    }
+}
+
 int main(int argc, char **argv) {
     ros::init(argc, argv, "panda_ik");
     ros::NodeHandle nh("~");
-
     tf2_ros::Buffer tfBuffer;
     tf2_ros::TransformListener tfListener(tfBuffer);
 
@@ -79,7 +123,6 @@ int main(int argc, char **argv) {
 
     uint8_t plane_numbers = 0;
 
-
     ros::Subscriber planeSub = nh.subscribe<drone_ros_msgs::Planes>("planes", 1,
         [&](const drone_ros_msgs::Planes::ConstPtr& msg) {
             normals.clear();
@@ -116,6 +159,7 @@ int main(int argc, char **argv) {
             }
         }
     );
+    boost::thread global_optimization(opt, &initialized, &commandedPose, &commandedVel, &normals[0], &points[0],&centers[0],&orientations[0],&half_axes[0],&plane_numbers);
     std::array<double, 4> last_drone_goal = {0,0,0,0};
     ros::Rate loop_rate(freq);
     while (ros::ok()){
@@ -230,5 +274,6 @@ int main(int argc, char **argv) {
         ros::spinOnce();
         loop_rate.sleep();
     }
+    global_optimization.join();
     return 1;
 }

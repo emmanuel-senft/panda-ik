@@ -32,6 +32,7 @@ type Robot = k::Chain<f64>;
 struct SolverState {
     robot_panoc_cache : PANOCCache,
     drone_panoc_cache : PANOCCache,
+    alternate_drone_panoc_cache : PANOCCache,
     robot : Robot
 }
 
@@ -54,12 +55,13 @@ fn _init(urdf: &str) {
     // Create a set of joints from end joint
     let robot_panoc_cache = PANOCCache::new(7, 1e-6, 100000);
     let drone_panoc_cache = PANOCCache::new(4, 1e-6, 100000);
+    let alternate_drone_panoc_cache = PANOCCache::new(4, 1e-6, 100000);
 
 
     unsafe {
         *STATE.borrow_mut() = Some(
             Mutex::new(
-                SolverState {robot_panoc_cache, drone_panoc_cache, robot}
+                SolverState {robot_panoc_cache, drone_panoc_cache, alternate_drone_panoc_cache, robot}
             )
         );
     }
@@ -349,11 +351,88 @@ pub extern "C" fn solve(robot_start: *mut [f64;7], drone_current: *mut [f64;4], 
     robot.set_joint_positions_clamped(&robot_state);
     robot.update_transforms();
     let trans = robot.find(&name).unwrap().world_transform().unwrap();
-
     unsafe {
         *robot_start = robot_state;
         *drone_goal = drone_state;
         *goal_x = [trans.translation.x,trans.translation.y,trans.translation.z];
+        *errors_start = errors;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn solve_global(robot_start: *mut [f64;7], drone_goal: *mut [f64;4], link_name: *mut c_char, 
+                        goal_x: *mut [f64;3], goal_q: *mut [f64;4], vel: *mut [f64;3], errors_start: *mut [bool;4],
+                        plane_normals_ptr: *mut f64, plane_points_ptr: *mut f64, plane_centers_ptr: *mut f64,
+                        plane_orientations_ptr: *mut f64, plane_half_axes_ptr: *mut f64, plane_number_ptr: *mut u8) {
+    
+    let plane_number = unsafe{usize::try_from(std::ptr::read(plane_number_ptr).clone()).unwrap()};
+    let normals;
+    let points;
+    let centers;
+    let orientations;
+    let half_axes;
+    unsafe {
+        normals = Vec::from(std::slice::from_raw_parts(plane_normals_ptr, plane_number*3));
+        points = Vec::from(std::slice::from_raw_parts(plane_points_ptr, plane_number*12));
+        centers = Vec::from(std::slice::from_raw_parts(plane_centers_ptr, plane_number*3));
+        orientations = Vec::from(std::slice::from_raw_parts(plane_orientations_ptr, plane_number*4));
+        half_axes = Vec::from(std::slice::from_raw_parts(plane_half_axes_ptr, plane_number*3));
+    }
+    let mut planes = Vec::new();
+    for i in 0..plane_number {
+        let mut v=Vector3::new(normals[3*i],normals[3*i+1],normals[3*i+2]);
+        v=v/v.norm();
+
+        let op1 = OtherPoint::new(points[12*i],points[12*i+1],points[12*i+2]);
+        let op2 = OtherPoint::new(points[12*i+3],points[12*i+4],points[12*i+5]);
+        let op3 = OtherPoint::new(points[12*i+6],points[12*i+7],points[12*i+8]);
+        let op4 = OtherPoint::new(points[12*i+9],points[12*i+10],points[12*i+11]);
+        let polyline = Polyline::new(vec![op1,op2,op3,op4],None);
+
+        let center=OtherTranslation::new(centers[3*i],centers[3*i+1],centers[3*i+2]);
+        let rotation=OtherUnitQuaternion::from_quaternion(OtherQuaternion::new(orientations[4*i+3],orientations[4*i],orientations[4*i+1],orientations[4*i+2]));
+        let half_axes=OtherVector::new(half_axes[3*i],half_axes[3*i+1],half_axes[3*i+2]);
+
+        let cube = Cuboid::new(half_axes);   
+        let trans = Isometry3::from_parts(center,rotation);
+
+        let plane = Plane {normal: v, cube : cube, trans : trans, polyline : polyline};
+
+        planes.push(plane);
+    }   
+    let position = unsafe{Vector3::from(std::ptr::read(goal_x))};
+    let orientation = unsafe{UnitQuaternion::from_quaternion(Quaternion::from(std::ptr::read(goal_q)))};
+    let velocity = unsafe{Vector3::from(std::ptr::read(vel))};
+    let mut errors = unsafe{std::ptr::read(errors_start).clone()};
+
+    let state = get_state().get_mut().unwrap();
+    let robot = &mut state.robot;
+    let name = charp_to_str(link_name);
+    match robot.find(&name) {
+        None => {
+
+            for node in robot.iter() {
+                println!("{:?}", (*node.joint()).name);
+            }
+            println!("Couldn't find: {}", name);
+        },
+        Some(_v) => {
+
+        }
+    };
+    let init_state = unsafe{std::ptr::read(robot_start).clone()};
+    robot.set_joint_positions_clamped(&init_state);
+    robot.update_transforms();
+
+    let drone_state = optimize_viewpoint(drone_goal, &planes, &position, &orientation, &velocity, &mut errors,robot);
+    //let robot_state = optimize_robot(robot_start, &position, &orientation, &mut errors, robot, name, drone_current);
+    //robot.set_joint_positions_clamped(&robot_state);
+    //robot.update_transforms();
+    //let trans = robot.find(&name).unwrap().world_transform().unwrap();
+    unsafe {
+        //*robot_start = robot_state;
+        *drone_goal = drone_state;
+        //*goal_x = [trans.translation.x,trans.translation.y,trans.translation.z];
         *errors_start = errors;
     }
 }
@@ -493,6 +572,81 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
         let c8 = 20.*drone_robot_occlusion(&u,&destination,&robot_occ);
         let c9 = drone_movement_cost(&u, &drone_current, &lb, &ub);
         *c=c1+c2+c3+c4+c5+c6+c7+c8+c9;
+        Ok(())
+    };
+
+    let dcost = |u: &[f64], grad: &mut [f64]| {
+        drone_finite_difference(&cost, u, grad)
+    };
+
+    let mut cur_cost = 0.0;
+    cost(&drone_state, &mut cur_cost).unwrap();
+    let problem = Problem::new(&bounds, dcost, cost);
+    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(50);//.with_max_duration(std::time::Duration::from_millis(10));
+
+    bounds.project(&mut drone_state);
+    let _status = opt.solve(&mut drone_state);
+    if _status.is_err(){
+        errors[2]=true;
+    }
+    else{
+        if _status.unwrap().exit_status() == ExitStatus::NotConvergedOutOfTime {
+            errors[3];
+        }
+        else{}
+    }
+    drone_state
+}
+
+
+fn optimize_viewpoint(drone_goal: *mut [f64;4], planes: &Vec<Plane>, position: &Vector3<f64>, orientation: &UnitQuaternion<f64>, velocity: &Vector3<f64>, errors: &mut [bool;4], robot: &mut Robot) -> [f64; 4] {
+    let mut drone_state = unsafe{std::ptr::read(drone_goal).clone()};
+
+    let ub = [
+        2.,
+        2.,
+        2.,
+        2.*std::f64::consts::PI
+    ];
+    let lb = [
+        //Drone x,y,z,theta
+        -2.,
+        -2.,
+        0.2,
+        -2.*std::f64::consts::PI
+    ];
+    let mut middle = [0.;4];
+    for i in 0..4 {
+        middle[i] = (ub[i] + lb[i]) / 2.;
+    }
+    let bounds = Rectangle::new(Some(&lb), Some(&ub));
+
+    let state = get_state().get_mut().unwrap();
+    let panoc_cache = &mut state.alternate_drone_panoc_cache;
+
+    let destination = position+velocity*0.25;
+
+    let p1 = get_point(robot,"panda_joint1");
+    let p2 = get_point(robot,"panda_joint3");
+    let p3 = get_point(robot,"panda_joint4");
+    let p4 = get_point(robot,"panda_joint6");
+    let p5 = get_point(robot,"panda_joint7");
+    let p6 = get_point(robot,"panda_gripper_joint");
+    let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
+    let robot_coll = Polyline::new(vec![p1,p2,p3,p4,p5,p6],None);
+
+    let cost = |u: &[f64], c: &mut f64| {
+        let c1 =  100.*drone_view_cost(&u,&destination);
+        let c2 = 1.*drone_distance_cost(&u,&destination,&velocity);
+        let c3 = 20.*drone_altitude_cost(&u,&destination);
+        let c4 = 2.*drone_polar_cost(&u,&destination, &orientation,&planes);
+        let c5 = 200. * drone_plane_occlusion_cost(&u,&destination,&planes); 
+        let c6 = drone_plane_collision_cost(&u,&planes); 
+        let c7 = 20.*drone_safety(&u,&robot_coll);
+        let c8 = 20.*drone_robot_occlusion(&u,&destination,&robot_occ);
+        //let c9 = drone_movement_cost(&u, &drone_current, &lb, &ub);
+        //*c=c1+c2+c3+c4+c5+c6+c7+c8+c9;
+        *c=c1+c2+c3+c4+c5+c6+c7+c8;
         Ok(())
     };
 
