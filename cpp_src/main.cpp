@@ -144,6 +144,7 @@ int main(int argc, char **argv) {
             ros::Duration(1.0).sleep();
             continue;
         }
+        double uncertainty = 0.05;
         KDL::Rotation drone_rot = KDL::Rotation::Quaternion(droneTransform.transform.rotation.x,droneTransform.transform.rotation.y,droneTransform.transform.rotation.z,droneTransform.transform.rotation.w);
         double r, p, y;
         drone_rot.GetRPY(r, p, y);
@@ -175,7 +176,7 @@ int main(int argc, char **argv) {
             }
             if(reaching_drone_pose)
                 solveDroneOnly(robot_state.data(), drone_current.data(), drone_goal.data(), last_drone_goal.data(), errors.data(), 
-            &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers);
+            &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty);
         }
         if(!reaching_drone_pose){
             commandedPose.pose.position.x+=commandedVel.linear.x/freq;
@@ -200,7 +201,7 @@ int main(int argc, char **argv) {
             std::array<double, 3> velocity = {commandedVel.linear.x, commandedVel.linear.y,commandedVel.linear.z};
         
             solve(robot_state.data(), drone_current.data(), last_drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
-              velocity.data(), errors.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers);
+              velocity.data(), errors.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty);
         }
 
         if(errors[0]){
