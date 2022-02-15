@@ -64,6 +64,7 @@ int main(int argc, char **argv) {
 
     std::string frame_id = "panda_gripper_joint";
     bool initialized = false;
+    bool drone_init = false;
 
     int freq = 100;
     bool start = false;
@@ -150,6 +151,11 @@ int main(int argc, char **argv) {
         drone_rot.GetRPY(r, p, y);
         std::array<double, 4> drone_current = {droneTransform.transform.translation.x,droneTransform.transform.translation.y,droneTransform.transform.translation.z,y};
         
+        if(!drone_init){
+            drone_init = true;
+            last_drone_goal = drone_current;
+        }
+
         bool valid_output = true;
         std::string name = "panda_gripper_joint";//msg->child_frame_id;
 

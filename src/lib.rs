@@ -12,7 +12,7 @@ use ncollide3d::query;
 use ncollide3d::query::ClosestPoints;
 use ncollide3d::nalgebra::geometry::Isometry3;
 
-use optimization_engine::constraints::{Constraint, Rectangle};
+use optimization_engine::constraints::{Constraint, Rectangle, Ball2};
 use optimization_engine::{Optimizer, Problem, SolverError, panoc::*,core::ExitStatus};
 
 use std::borrow::BorrowMut;
@@ -109,12 +109,10 @@ fn movement_cost(state: &[f64], init_state: &[f64],lb: &[f64], hb: &[f64]) -> f6
 }
 
 fn drone_movement_cost(state: &[f64], init_state: &[f64], margin: f64, k: i32) -> f64 {
+    let drone_pose = Vector3::new(state[0],state[1],state[2]);
+    let init_pose = Vector3::new(init_state[0],init_state[1],init_state[2]);
     let mut n = 0.0;
-    for i in 0..3 {
-        n+=get_gaussian(state[i]-init_state[i],margin,k);
-    }
-    n+=get_gaussian(diff_angle(state[3],init_state[3]),10.*margin,k);
-    1.-n/4.
+    ((drone_pose - init_pose).norm()).powi(k)
 }
 
 fn norm_angle(a: f64) -> f64{
@@ -471,19 +469,20 @@ fn optimize_robot(robot_start: *mut [f64;7], position: &Vector3<f64>, orientatio
     robot_state
 }
 
-fn get_drone_boundary()->([f64; 4],[f64; 4]) {
+fn get_drone_boundary(last_command: [f64; 4])->([f64; 4],[f64; 4]) {
+    let margin = 0.01;
     let ub = [
-        2.,
-        2.,
-        2.,
-        2.*std::f64::consts::PI
+        (2.).min(last_command[0]+margin),
+        (2.).min(last_command[1]+margin),
+        (2.).min(last_command[2]+margin),
+        (2.*std::f64::consts::PI).min(last_command[3]+10.*margin)
     ];
     let lb = [
         //Drone x,y,z,theta
-        -2.,
-        -2.,
-        0.2,
-        -2.*std::f64::consts::PI
+        (-2.).max(last_command[0]-margin),
+        (-2.).max(last_command[1]-margin),
+        (0.2).max(last_command[2]-margin),
+        (-2.*std::f64::consts::PI).max(last_command[3]-10.*margin)
     ];
 
     (ub,lb)
@@ -495,11 +494,10 @@ fn drone_motion_cost(state: &[f64], current_position: &[f64], last_command: &[f6
     let rot = OtherUnitQuaternion::from_quaternion(OtherQuaternion::new(std::f64::consts::SQRT_2/2.,0.,0.,std::f64::consts::SQRT_2/2.));
     let drone_iso = &Isometry3::from_parts(trans, rot);
 
-    let c1 = drone_plane_collision_cost(&drone_caps, &drone_iso, &planes); 
+    let c1 = 10.*drone_plane_collision_cost(&drone_caps, &drone_iso, &planes); 
     let c2 = 10.*drone_safety(&drone_caps, &drone_iso, robot_coll, robot_size);
-    let c3 = 100.*drone_movement_cost(&state, &current_position, 0.3, 4);
-    let c4 = 10.*drone_movement_cost(&state, &last_command, 0.01,6);
-    c1+c2+c3+c4
+    let c3 = 1000.*drone_movement_cost(&state, &current_position, 0.3, 6);
+    c1+c2+c3//+c4
 }
 
 fn drone_view_cost(state: &[f64], destination: &Vector3<f64>, orientation: &UnitQuaternion<f64>, planes: &Vec<Plane>, closest_point: &Vector3<f64>, robot_occ: &Polyline<f64>, uncertainty: Vector3<f64>, drone_size: Vector3<f64>, robot_size: f64)->f64{
@@ -509,7 +507,7 @@ fn drone_view_cost(state: &[f64], destination: &Vector3<f64>, orientation: &Unit
         c1 = 10.*drone_distance_cost(&state,&destination,&closest_point);
         c2 = 5.*drone_polar_cost(&state,&destination, &orientation,&closest_point);
     }
-    else{ 
+    else{
         let theta=(state[1]-destination[1]).atan2(state[0]-destination[0]);
         c2 = (norm_angle(theta)-orientation.euler_angles().2).powi(2);
     }
@@ -529,7 +527,7 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
     let last_command = unsafe{std::ptr::read(drone_goal).clone()};
     let _init_state = unsafe{std::ptr::read(drone_c).clone()};
 
-    let (ub,lb) = get_drone_boundary();
+    let (ub,lb) = get_drone_boundary(last_command);
     let bounds = Rectangle::new(Some(&lb), Some(&ub));
 
     let state = get_state().get_mut().unwrap();
@@ -618,7 +616,7 @@ fn optimize_drone_goal(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], last_com
     let mut drone_goal = unsafe{std::ptr::read(drone_goal).clone()};
     let last_command = unsafe{std::ptr::read(last_command).clone()};
 
-    let (ub,lb) = get_drone_boundary();
+    let (ub,lb) = get_drone_boundary(last_command);
     let bounds = Rectangle::new(Some(&lb), Some(&ub));
 
     let state = get_state().get_mut().unwrap();
