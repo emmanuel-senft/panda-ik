@@ -113,29 +113,30 @@ fn drone_movement_cost(state: &[f64], init_state: &[f64], margin: f64, k: i32) -
     for i in 0..3 {
         n+=get_gaussian(state[i]-init_state[i],margin,k);
     }
-    n+=get_gaussian(norm_angle(state[3]-init_state[3]),10.*margin,k);
+    n+=get_gaussian(diff_angle(state[3],init_state[3]),10.*margin,k);
     1.-n/4.
 }
 
 fn norm_angle(a: f64) -> f64{
-    -(-a+std::f64::consts::PI)%(2.*std::f64::consts::PI)+std::f64::consts::PI
+    (a+3.*std::f64::consts::PI)%(2.*std::f64::consts::PI)-std::f64::consts::PI
 }
 
 fn diff_angle(a1: f64, a2: f64)-> f64 {
-    norm_angle(a1-a2)
+    norm_angle(norm_angle(a1)-(a2))
 }
 
 fn drone_view_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
+    let view = Vector3::new(state[3].cos(), state[3].sin(), 0.);
+    return view.angle(&(destination-Vector3::new(state[0],state[1],state[2]))).powi(2);
     //let theta = state[3];
     //let n=(theta.cos()*(state[1]-destination[1])-theta.sin()*(state[0]-destination[0])).powi(2)+((theta-angle2-std::f64::consts::PI)/(2.*std::f64::consts::PI)).powi(2);
     //(theta-std::f64::consts::PI/2.).powi(2)
-    let angle2 = (state[1]-destination[1]).atan2(state[0]-destination[0]);
-    ((state[3]-angle2-std::f64::consts::PI)/(2.*std::f64::consts::PI)).powi(2)
 }
 
-fn drone_distance_cost(state: &[f64], destination: &Vector3<f64>, velocity: &Vector3<f64>) -> f64 {
+fn drone_distance_cost(state: &[f64], destination: &Vector3<f64>, closest: &Vector3<f64>) -> f64 {
     //let n = ((state[0]-destination[0]).powi(2)+(state[1]-destination[1]).powi(2)-(0.7+velocity.norm()/4.).powi(2)).powi(2);
-    let n = ((state[0]-destination[0]).powi(2)+(state[1]-destination[1]).powi(2)-0.5).powi(2);
+    let drone_pose = Vector3::new(state[0],state[1],state[2]);
+    let n = ((drone_pose-destination).norm()-2.*(destination-closest).norm() - 0.3).powi(2);
     n
 }
 
@@ -145,43 +146,10 @@ fn drone_altitude_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
     //let n = (state[7]-destination[0]-distance*angle.cos()).powi(2) + (state[8]-destination[1]-distance*angle.sin()).powi(2) + (state[9]-destination[2]-theta.sin()*distance).powi(2) + (state[10]-std::f64::consts::PI-angle).powi(2); // (state[10] - state[7].atan2(state[8])).powi(2)
 }
 
-fn drone_polar_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQuaternion<f64>, planes: &Vec<Plane>) -> f64 {
-    //Closest plane
-    let ee_ball = Ball::new(0.01);
-    let trans = Isometry3::new(OtherVector::new(destination[0], destination[1], destination[2]), na::zero());
-    if planes.len() > 0 {
-        let mut index = 0;
-        let mut min_dist = f64::MAX;
-        for i in 0..planes.len(){
-            let dist = query::distance(&planes[i].trans, &planes[i].cube, &trans,&ee_ball);
-            if dist < min_dist {
-                min_dist = dist;
-                index = i;
-            }
-        }
-        let drone_pose = Vector3::new(state[0],state[1],destination[2]);
-        let cp = query::closest_points(&planes[index].trans, &planes[index].cube, &trans, &ee_ball,200.);
-        let mut closest_point = Vector3::new(-1.,-1.,-1.);
-        match cp{
-                ClosestPoints::Intersecting=>{
-            },
-                ClosestPoints::WithinMargin(p1,p2)=>{
-                    closest_point[0] = p1[0];
-                    closest_point[1] = p1[1];
-                    closest_point[2] = p1[2];
-            },
-            ClosestPoints::Disjoint=>{
-            }
-        };
-        let angle = (destination-closest_point).angle(&(drone_pose-destination)).abs();
-        return (angle-std::f64::consts::PI*3./8.).powi(2);
-    }
-
-    //let angle1 = destination[1].atan2(destination[0]);
-    //let angle2 = state[8].atan2(state[7]);
-    //let n = (angle1-robot_rot_mat[1,0].atan2(robot_rot_mat[0,0])).powi(2);
-    let theta=(state[1]-destination[1]).atan2(state[0]-destination[0]);
-    (norm_angle(theta)-rotation.euler_angles().2).powi(2)
+fn drone_polar_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQuaternion<f64>, closest_point: &Vector3<f64>) -> f64 {
+    let drone_pose = Vector3::new(state[0],state[1],destination[2]);
+    let angle = (destination-closest_point).angle(&(destination-drone_pose));
+    return (angle-std::f64::consts::PI*3./4.).powi(2);
 }
 
 fn drone_safety(state: &[f64],robot_coll: &Polyline<f64>) -> f64 {
@@ -547,21 +515,60 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
     let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
     let robot_coll = Polyline::new(vec![p1,p2,p3,p4,p5,p6],None);
 
+    //Closest plane
+    let mut closest_point = Vector3::new(-1.,-1.,-1.);
+    if planes.len() > 0 {
+        let ee_ball = Ball::new(0.01);
+        let trans = Isometry3::new(OtherVector::new(destination[0], destination[1], destination[2]), na::zero());
+        let mut index = 0;
+        let mut min_dist = f64::MAX;
+
+        for i in 0..planes.len(){
+            let dist = query::distance(&planes[i].trans, &planes[i].cube, &trans,&ee_ball);
+            if dist < min_dist {
+                min_dist = dist;
+                index = i;
+            }
+        }
+        let plane = &planes[index];
+        let cp = query::closest_points(&plane.trans, &plane.cube, &trans, &ee_ball,200.);
+        match cp{
+                ClosestPoints::Intersecting=>{
+            },
+                ClosestPoints::WithinMargin(p1,p2)=>{
+                    closest_point[0] = p1[0];
+                    closest_point[1] = p1[1];
+                    closest_point[2] = p1[2];
+            },
+            ClosestPoints::Disjoint=>{
+            }
+        };
+    }
+
     let cost = |u: &[f64], c: &mut f64| {
-        // Movement costs
         let c1 = drone_plane_collision_cost(&u,&planes); 
-        let c2 = drone_safety(&u,&robot_coll);
-        let c3 = 50.*drone_movement_cost(&u, &drone_current, 0.3, 4);
-        let c10 = 10.*drone_movement_cost(&u, &last_command, 0.01,6);
+        let c2 = 10.*drone_safety(&u,&robot_coll);
+        let c3 = 100.*drone_movement_cost(&u, &drone_current, 0.3, 4);
+        let c4 = 10.*drone_movement_cost(&u, &last_command, 0.01,6);
+
+        let mut c5 = ((u[0]-destination[0]).powi(2)+(u[1]-destination[1]).powi(2)-(0.7_f64).powi(2)).powi(2);
+        let mut c6 = 0.;
+        if planes.len() > 0 {
+            c5 = 10.*drone_distance_cost(&u,&destination,&closest_point);
+            c6 = 5.*drone_polar_cost(&u,&destination, &orientation,&closest_point);
+        }
+        else{ 
+            let theta=(u[1]-destination[1]).atan2(u[0]-destination[0]);
+            c6 = (norm_angle(theta)-orientation.euler_angles().2).powi(2);
+        }
 
         //View costs
-        let c4 =  100.*drone_view_cost(&u,&destination);
-        let c5 = 1.*drone_distance_cost(&u,&destination,&velocity);
-        let c6 = 20.*drone_altitude_cost(&u,&destination);
-        let c7 = 2.*drone_polar_cost(&u,&destination, &orientation,&planes);
+        let c7 =  10.*drone_view_cost(&u,&destination);
         let c8 = 200. * drone_plane_occlusion_cost(&u,&destination,&planes); 
         let c9 = 20.*drone_robot_occlusion(&u,&destination,&robot_occ);
-        *c=c1+c2+c3+c4+c5+c6+c7+c8+c9+c10;
+
+        *c=c1+c2+c3+c4+c5+c6+c7+c8+c9;
+        
         Ok(())
     };
 
