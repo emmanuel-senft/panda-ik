@@ -174,6 +174,12 @@ int main(int argc, char **argv) {
 
     geometry_msgs::Twist commandedVel = geometry_msgs::Twist();
 
+    // Data associated with going to an alternate view
+    geometry_msgs::PoseStamped prevCommandedPose = geometry_msgs::PoseStamped();
+    bool midpoint1_reached = false;
+    bool midpoint2_reached = false;
+    geometry_msgs::TransformStamped droneTransform;
+
     geometry_msgs::PoseStamped droneCommandedPose = geometry_msgs::PoseStamped();
     bool reaching_drone_pose=false;
 
@@ -192,7 +198,18 @@ int main(int argc, char **argv) {
     );
     ros::Subscriber poseSub = nh.subscribe<geometry_msgs::PoseStamped>("drone_goal", 1,
         [&](const geometry_msgs::PoseStamped::ConstPtr& msg) {
+            // prevCommandedPose = droneCommandedPose;
+            prevCommandedPose.pose.position.x = droneTransform.transform.translation.x;
+            prevCommandedPose.pose.position.y = droneTransform.transform.translation.y;
+            prevCommandedPose.pose.position.z = droneTransform.transform.translation.z;
+            prevCommandedPose.pose.orientation.x = droneTransform.transform.rotation.x;
+            prevCommandedPose.pose.orientation.y = droneTransform.transform.rotation.y;
+            prevCommandedPose.pose.orientation.z = droneTransform.transform.rotation.z;
+            prevCommandedPose.pose.orientation.w = droneTransform.transform.rotation.w;
+
             droneCommandedPose = *msg;
+            midpoint1_reached = false;
+            midpoint2_reached = false;
             reaching_drone_pose = true;
             cout<<"Got pose"<<endl;
         }
@@ -255,7 +272,6 @@ int main(int argc, char **argv) {
             loop_rate.sleep();
             continue;
         }
-        geometry_msgs::TransformStamped droneTransform;
         try{
             droneTransform = tfBuffer.lookupTransform("panda_link0", "drone",
                                 ros::Time(0));
@@ -286,19 +302,49 @@ int main(int argc, char **argv) {
         std::array<double, 4> drone_goal = last_drone_goal;
         if(reaching_drone_pose){
             std::array<double, 4> drone_goal;
-            KDL::Rotation drone_goal_rot = KDL::Rotation::Quaternion(droneCommandedPose.pose.orientation.x,droneCommandedPose.pose.orientation.y,droneCommandedPose.pose.orientation.z,droneCommandedPose.pose.orientation.w);
-            double r, p, y;
-            drone_goal_rot.GetRPY(r, p, y);
-            drone_goal[0]=droneCommandedPose.pose.position.x;
-            drone_goal[1]=droneCommandedPose.pose.position.y;
-            drone_goal[2]=droneCommandedPose.pose.position.z;
-            drone_goal[3]=y;
-            double threshold = .1;
+            
+            if(!midpoint1_reached){
+                drone_goal[0] = prevCommandedPose.pose.position.x;
+                drone_goal[1] = prevCommandedPose.pose.position.y;
+                drone_goal[2] = 1.2;
+                KDL::Rotation drone_goal_rot = KDL::Rotation::Quaternion(prevCommandedPose.pose.orientation.x,prevCommandedPose.pose.orientation.y,prevCommandedPose.pose.orientation.z,prevCommandedPose.pose.orientation.w);
+                double r, p, y;
+                drone_goal_rot.GetRPY(r, p, y);
+                drone_goal[3] = y;
+            }
+            else{
+                std::cout << "ENDGOAL" << std::endl;
+                drone_goal[0]=droneCommandedPose.pose.position.x;
+                drone_goal[1]=droneCommandedPose.pose.position.y;
+                drone_goal[2]=droneCommandedPose.pose.position.z;
+                if(!midpoint2_reached){
+                    drone_goal[2] = 1.2;
+                }
+                KDL::Rotation drone_goal_rot = KDL::Rotation::Quaternion(droneCommandedPose.pose.orientation.x,droneCommandedPose.pose.orientation.y,droneCommandedPose.pose.orientation.z,droneCommandedPose.pose.orientation.w);
+                double r, p, y;
+                drone_goal_rot.GetRPY(r, p, y);
+                drone_goal[3]=y;
+            }
+
+            std::cout << "Drone Goal: " << drone_goal[0] << " " << drone_goal[1] << " " << drone_goal[2] << std::endl;            
+            double threshold = .01;
             reaching_drone_pose=false;
             for(int i=0;i<4;i++){
                 if(pow(drone_goal[i]-drone_current[i],2)>threshold)
                     reaching_drone_pose = true;
             }
+            
+            // check if reached midpoint goals
+            if (!reaching_drone_pose && !midpoint1_reached){
+                midpoint1_reached = true;
+                reaching_drone_pose = true;
+            }
+
+            if (!reaching_drone_pose && midpoint1_reached && !midpoint2_reached){
+                midpoint2_reached = true;
+                reaching_drone_pose = true;
+            }
+
             if(reaching_drone_pose)
                 solveDroneOnly(robot_state.data(), drone_current.data(), drone_goal.data(), last_drone_goal.data(), errors.data(), 
             &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0]);

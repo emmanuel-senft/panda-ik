@@ -211,6 +211,11 @@ fn drone_goal_cost(state: &[f64], goal: &[f64],lb: &[f64], ub: &[f64]) -> f64 {
     for i in 0..3{
         c += ((state[i]-goal[i])).powi(2);
     }
+
+    // Penalize to have greater height when further away -- fly up first
+    // let xy_dist = (state[0]-goal[0]).powi(4)+(state[1]-goal[1]).powi(4);
+    // c += 100.0*xy_dist*(state[2]-2.0).powi(2); 
+
     c + (norm_angle(state[3]-goal[3])/std::f64::consts::PI).powi(2)/4.
 }
 
@@ -542,6 +547,13 @@ fn drone_collision_cost(state: &[f64], current_position: &[f64], planes: &Vec<Pl
     c1+c2
 }
 
+fn drone_away_cost(state: &[f64], current_position: &[f64]) -> f64{
+    let current = Vector3::new(current_position[0],current_position[1],current_position[2]);
+    let proposed = Vector3::new(state[0],state[1],state[2]);
+
+    1./(0.1+(current-proposed).norm())
+}
+
 fn drone_motion_cost(state: &[f64], current_position: &[f64]) -> f64{
     1000.*drone_movement_cost(&state, &current_position, 0.3, 6)
 }
@@ -765,8 +777,9 @@ fn optimize_global_view(drone_c: *mut [f64;4], planes: &Vec<Plane>, errors: &mut
     let cost = |u: &[f64], c: &mut f64| {
         let c_view = drone_view_cost(&u, &destination, &orientation, &planes, &closest_point, &robot_occ, uncertainty, drone_size, robot_size);
         let c_collision = drone_collision_cost(&u,&drone_current,&planes,&robot_coll,uncertainty,drone_size,robot_size);
-        
-        *c=c_view+c_collision;
+        let c_awayfromcurrentdroneview = drone_away_cost(&u,&drone_current);
+
+        *c=c_view+c_collision+c_awayfromcurrentdroneview;
         Ok(())
     };
 
