@@ -7,12 +7,12 @@ use ncollide3d::nalgebra::Translation3 as OtherTranslation;
 use ncollide3d::nalgebra::UnitQuaternion as OtherUnitQuaternion;
 use ncollide3d::nalgebra::Quaternion as OtherQuaternion;
 use ncollide3d::math::Vector as OtherVector;
-use ncollide3d::shape::{Polyline,Segment,Ball,Cuboid,Capsule};
+use ncollide3d::shape::{Polyline,Segment,Ball,Cuboid,ConvexHull};
 use ncollide3d::query;
 use ncollide3d::query::ClosestPoints;
 use ncollide3d::nalgebra::geometry::Isometry3;
 
-use optimization_engine::constraints::{Constraint, Rectangle, Ball2};
+use optimization_engine::constraints::{Constraint, Rectangle};
 use optimization_engine::{Optimizer, Problem, SolverError, panoc::*,core::ExitStatus};
 
 use std::borrow::BorrowMut;
@@ -162,11 +162,20 @@ fn drone_safety(drone_caps: &Cuboid<f64>, drone_iso: &Isometry3<f64>, robot_coll
     get_gaussian(x,robot_size,6)
 }
 
-fn drone_robot_occlusion(state: &[f64], destination: &Vector3<f64>,robot_occ: &Polyline<f64>,uncertainty: Vector3<f64>, drone_size: Vector3<f64>, robot_size: f64) -> f64 {
-    let view = Segment::new(OtherPoint::new(state[0],state[1],state[2]),OtherPoint::new(destination[0],destination[1],destination[2]));
-    let x = query::distance(&Isometry3::identity(), &view, &Isometry3::identity(),robot_occ);
-    //println!("{}",x);
-    (-(x/(drone_size[0]+robot_size+uncertainty[0])).powi(6)).exp()
+fn drone_robot_occlusion(state: &[f64], destination: &Vector3<f64>,robot_occ: &Polyline<f64>,uncertainty: Vector3<f64>, drone_size: Vector3<f64>, robot_size: f64, view_cone: &Option<ConvexHull<f64>>) -> f64 {
+    let mut occlusion_cost = 0.0;
+    match &*view_cone{
+        None=>{
+            let view = Segment::new(OtherPoint::new(state[0],state[1],state[2]),OtherPoint::new(destination[0],destination[1],destination[2]));
+            let x = query::distance(&Isometry3::identity(), &view, &Isometry3::identity(),robot_occ);
+            occlusion_cost = (-(x/(drone_size[0]+robot_size+uncertainty[0])).powi(6)).exp();
+        },
+        Some(h)=>{
+            let occlusion_dist = -query::contact(&Isometry3::identity(), h, &Isometry3::identity(),robot_occ,10.).unwrap().depth;
+            occlusion_cost = occlusion_dist.min(0.).powi(2);
+        }
+    }
+    occlusion_cost
 }
     
 
@@ -193,15 +202,26 @@ fn drone_plane_collision_cost(drone_caps: &Cuboid<f64>, drone_iso: &Isometry3<f6
     safety_cost
 }
 
-fn drone_plane_occlusion_cost(state: &[f64], destination: &Vector3<f64>, planes: &Vec<Plane>, uncertainty: Vector3<f64>)->f64{
+fn drone_plane_occlusion_cost(state: &[f64], destination: &Vector3<f64>, planes: &Vec<Plane>, uncertainty: Vector3<f64>, view_cone: &Option<ConvexHull<f64>>)->f64{
+
     let mut occlusion_cost = 0.;
-    let segment = Segment::new(OtherPoint::new(state[0],state[1],state[2]),OtherPoint::new(destination[0],destination[1],destination[2]));
-    for i in 0..planes.len(){
-        let mut occlusion_dist = query::distance(&planes[i].trans, &planes[i].cube, &Isometry3::identity(),&segment);
-        if occlusion_dist == 0.{
-            occlusion_dist = -query::distance(&Isometry3::identity(), &planes[i].polyline, &Isometry3::identity(),&segment);
+    match &*view_cone{
+        None=>{
+            let segment = Segment::new(OtherPoint::new(state[0],state[1],state[2]),OtherPoint::new(destination[0],destination[1],destination[2]));
+            for i in 0..planes.len(){
+                let mut occlusion_dist = query::distance(&planes[i].trans, &planes[i].cube, &Isometry3::identity(),&segment);
+                if occlusion_dist == 0.{
+                    occlusion_dist = -query::distance(&Isometry3::identity(), &planes[i].polyline, &Isometry3::identity(),&segment);
+                }
+                occlusion_cost += (-occlusion_dist+uncertainty[0]).max(0.).powi(2);
+            }
+        },
+        Some(h)=>{
+            for i in 0..planes.len(){
+                let occlusion_dist = -query::contact(&Isometry3::identity(), h,&planes[i].trans,&planes[i].cube,10.).unwrap().depth;
+                occlusion_cost += (occlusion_dist).min(0.).powi(2);
+            }
         }
-        occlusion_cost += (-occlusion_dist+uncertainty[0]).max(0.).powi(2);
     }
     occlusion_cost
 }
@@ -570,12 +590,48 @@ fn drone_view_cost(state: &[f64], destination: &Vector3<f64>, orientation: &Unit
         let theta=(state[1]-destination[1]).atan2(state[0]-destination[0]);
         c2 = (norm_angle(theta)-orientation.euler_angles().2).powi(2);
     }
-
+    let vision_radius = 0.1;
+    let view_cone = get_view_hull(state,destination,uncertainty,vision_radius);
     let c3 =  10.*drone_line_view_cost(&state,&destination);
-    let c4 = 200. * drone_plane_occlusion_cost(&state,&destination,&planes,uncertainty); 
-    let c5 = 20.*drone_robot_occlusion(&state,&destination,&robot_occ,uncertainty,drone_size, robot_size);
+    let c4 = 200. * drone_plane_occlusion_cost(&state,&destination,&planes,uncertainty,&view_cone); 
+    let c5 = 20.*drone_robot_occlusion(&state,&destination,&robot_occ,uncertainty,drone_size, robot_size,&view_cone);
     c1+c2+c3+c4+c5
 
+}
+
+fn get_view_hull(state: &[f64], destination: &Vector3<f64>, uncertainty: Vector3<f64>, vision_radius: f64)-> Option<ConvexHull<f64>> {
+    let x = state[0];
+    let y = state[1];
+    let z = state[2];
+    let u_x = uncertainty[0];
+    let u_y = uncertainty[1];
+    let u_z = uncertainty[2];
+
+    let p_x = destination[0];
+    let p_y = destination[1];
+    let p_z = destination[2];
+
+    let view_vec = Vector3::new(p_x-x,p_y-y,p_z-z);
+    let mut rng = rand::thread_rng();
+    let mut u = Vector3::new(rng.gen_range(0.,1.),rng.gen_range(0.,1.),rng.gen_range(0.,1.));
+    u-=view_vec.dot(&u)*u;
+    u/= u.norm();
+    let v = view_vec.cross(&u) * vision_radius;
+    u*=vision_radius;
+
+    let d1 = OtherPoint::new(x-u_x,y-u_y,z-u_z);
+    let d2 = OtherPoint::new(x-u_x,y-u_y,z+u_z);
+    let d3 = OtherPoint::new(x-u_x,y+u_y,z-u_z);
+    let d4 = OtherPoint::new(x-u_x,y+u_y,z+u_z);
+    let d5 = OtherPoint::new(x+u_x,y+u_y,z-u_z);
+    let d6 = OtherPoint::new(x+u_x,y+u_y,z+u_z);
+    let d7 = OtherPoint::new(x+u_x,y-u_y,z-u_z);
+    let d8 = OtherPoint::new(x+u_x,y-u_y,z+u_z);
+
+    let k = std::f64::consts::SQRT_2/2.;
+    let p = OtherPoint::new(p_x,p_y,p_z);
+
+    ConvexHull::try_from_points(&[d1,d2,d3,d4,d5,d6,d7,d8,p])
 }
 
 fn get_closest_plane(ee_position: &Vector3<f64>, planes:&Vec<Plane> ) -> Vector3<f64>{
