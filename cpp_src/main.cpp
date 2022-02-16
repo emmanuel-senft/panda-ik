@@ -4,6 +4,7 @@
 #include "nav_msgs/Odometry.h"
 #include "std_msgs/Float64MultiArray.h"
 #include "drone_ros_msgs/Planes.h"
+#include "drone_ros_msgs/PoseCost.h"
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/Polygon.h>
 #include <geometry_msgs/Point.h>
@@ -11,15 +12,128 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/TwistStamped.h>
+#include <std_msgs/Float32.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <kdl/kdl.hpp>
 #include <iostream>
 #include <chrono>
 #include <math.h>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/locks.hpp>
 
 std::array<double, 7> joint_angles = {0,0,0,-1.5,0,1.5,0};
 using namespace std;
+
+
+void opt(std::array<double,3> uncertainty) {
+    boost::mutex mutex;
+    ros::NodeHandle nh("~");
+    ros::Publisher alternate_drone_pub = nh.advertise<drone_ros_msgs::PoseCost>("global_solutions", 1);
+    std::array<double, 7> robot_state = {0,0,0,-1.5,0,1.5,0}  ;
+    ros::Subscriber jaSub = nh.subscribe<std_msgs::Float64MultiArray>("output", 1,
+        [&](const std_msgs::Float64MultiArray::ConstPtr& msg) {
+            boost::lock_guard<boost::mutex> guard(mutex);
+            std::copy_n((msg->data).begin(), 7, robot_state.begin());
+        }
+    );
+
+    tf2_ros::Buffer tfBuffer;
+    tf2_ros::TransformListener tfListener(tfBuffer);
+
+    vector<double> normals;
+    vector<double> points;
+    vector<double> centers;
+    vector<double> orientations;
+    vector<double> half_axes;
+
+    uint8_t plane_numbers = 0;
+
+
+    ros::Subscriber planeSub = nh.subscribe<drone_ros_msgs::Planes>("planes", 1,
+        [&](const drone_ros_msgs::Planes::ConstPtr& msg) {
+            normals.clear();
+            points.clear();
+            centers.clear();
+            orientations.clear();
+            half_axes.clear();
+            plane_numbers=msg->normals.size();
+            for(geometry_msgs::Point normal: msg->normals){
+                normals.push_back(normal.x);
+                normals.push_back(normal.y);
+                normals.push_back(normal.z);
+            }
+            for(geometry_msgs::Pose pose: msg->poses){
+                centers.push_back(pose.position.x);
+                centers.push_back(pose.position.y);
+                centers.push_back(pose.position.z);
+                orientations.push_back(pose.orientation.x);
+                orientations.push_back(pose.orientation.y);
+                orientations.push_back(pose.orientation.z);
+                orientations.push_back(pose.orientation.w);
+            }
+            for(geometry_msgs::Vector3 half_axe: msg->half_axes){
+                half_axes.push_back(half_axe.x);
+                half_axes.push_back(half_axe.y);
+                half_axes.push_back(half_axe.z);
+            }
+            for(geometry_msgs::Polygon poly: msg->planes){
+                for(geometry_msgs::Point32 p: poly.points){
+                    points.push_back(p.x);
+                    points.push_back(p.y);
+                    points.push_back(p.z);
+                }
+            }
+        }
+    );
+
+
+    ros::Rate loop_rate(1);
+    while (ros::ok()){
+
+        geometry_msgs::TransformStamped droneTransform;
+        try{
+            droneTransform = tfBuffer.lookupTransform("panda_link0", "drone",
+                                ros::Time(0));
+        }
+        catch (tf2::TransformException &ex) {
+            ROS_WARN("%s",ex.what());
+            ros::Duration(1.0).sleep();
+            continue;
+        }
+        std::array<double,3> uncertainty = {0.05,0.05,0.02};
+        KDL::Rotation drone_rot = KDL::Rotation::Quaternion(droneTransform.transform.rotation.x,droneTransform.transform.rotation.y,droneTransform.transform.rotation.z,droneTransform.transform.rotation.w);
+        double r, p, y;
+        drone_rot.GetRPY(r, p, y);
+        std::array<double, 4> drone_current = {droneTransform.transform.translation.x,droneTransform.transform.translation.y,droneTransform.transform.translation.z,y};
+        
+        double cost = 0;
+        std::array<bool, 4> errors = {0,0,0,0};
+        {
+            boost::lock_guard<boost::mutex> guard(mutex);
+            cost = solveGlobalView(robot_state.data(), drone_current.data(), errors.data(), 
+                &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0]);
+        }
+
+        tf2::Quaternion q(0,0,0,1);
+
+        q.setEuler(0,0,drone_current[3]);
+        auto global_pose = drone_ros_msgs::PoseCost();
+        global_pose.pose.header.frame_id = "panda_link0";
+        global_pose.pose.header.stamp = ros::Time(0);
+        global_pose.pose.pose.position.x=drone_current[0];
+        global_pose.pose.pose.position.y=drone_current[1];
+        global_pose.pose.pose.position.z=drone_current[2];
+        global_pose.pose.pose.orientation.x=q[0];
+        global_pose.pose.pose.orientation.y=q[1];
+        global_pose.pose.pose.orientation.z=q[2];
+        global_pose.pose.pose.orientation.w=q[3];
+        global_pose.cost.data = float(cost);
+        alternate_drone_pub.publish(global_pose);
+        ros::spinOnce();
+        loop_rate.sleep();
+    }
+}
 
 int main(int argc, char **argv) {
     ros::init(argc, argv, "panda_ik");
@@ -50,6 +164,7 @@ int main(int argc, char **argv) {
     ros::Publisher pub = nh.advertise<std_msgs::Float64MultiArray>("output", 1);
     ros::Publisher drone_pub = nh.advertise<geometry_msgs::PoseStamped>("drone_output", 1);
     ros::Publisher panda_pub = nh.advertise<geometry_msgs::PoseStamped>("panda_commanded_pose", 1);
+    ros::Publisher cost_pub = nh.advertise<std_msgs::Float32>("view_cost", 1);
 
     geometry_msgs::PoseStamped commandedPose = geometry_msgs::PoseStamped();
     commandedPose.header.frame_id = "panda_link0";
@@ -129,6 +244,11 @@ int main(int argc, char **argv) {
     );
     std::array<double, 4> last_drone_goal = {0,0,0,0};
     ros::Rate loop_rate(freq);
+    std::array<double,3> uncertainty = {0.05,0.05,0.02};
+
+    boost::thread global_optimization(opt,uncertainty);
+    
+
     while (ros::ok()){
         if(! start){
             ros::spinOnce();
@@ -145,7 +265,6 @@ int main(int argc, char **argv) {
             ros::Duration(1.0).sleep();
             continue;
         }
-        std::array<double,3> uncertainty = {0.05,0.05,0.02};
         KDL::Rotation drone_rot = KDL::Rotation::Quaternion(droneTransform.transform.rotation.x,droneTransform.transform.rotation.y,droneTransform.transform.rotation.z,droneTransform.transform.rotation.w);
         double r, p, y;
         drone_rot.GetRPY(r, p, y);
@@ -206,8 +325,11 @@ int main(int argc, char **argv) {
             std::array<double, 4> orientation = {commandedPose.pose.orientation.x, commandedPose.pose.orientation.y, commandedPose.pose.orientation.z, commandedPose.pose.orientation.w};
             std::array<double, 3> velocity = {commandedVel.linear.x, commandedVel.linear.y,commandedVel.linear.z};
         
-            solve(robot_state.data(), drone_current.data(), last_drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
+            double cost = solve(robot_state.data(), drone_current.data(), last_drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
               velocity.data(), errors.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0]);
+            auto cost_msg = std_msgs::Float32();
+            cost_msg.data = float(cost);
+            cost_pub.publish(cost_msg);
         }
 
         if(errors[0]){
