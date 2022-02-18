@@ -22,6 +22,7 @@
 #include <math.h>
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/locks.hpp>
+#include <fstream>
 
 std::array<double, 7> joint_angles = {0,0,0,-1.5,0,1.5,0};
 using namespace std;
@@ -88,6 +89,28 @@ void opt(std::array<double,3> uncertainty) {
         }
     );
 
+    ros::Subscriber commandSub = nh.subscribe<std_msgs::String>("map", 1,
+        [&](const std_msgs::String::ConstPtr& msg) {
+            boost::lock_guard<boost::mutex> guard(mutex);
+            std::array<double,3> uncertainty = {0.05,0.05,0.02};
+            std::array<double,10000> map;
+            getMap(robot_state.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0],map.data());
+            std::cout<<"Got map"<<std::endl;
+            std::ofstream output_file("/home/senft/with_uncertainty.txt");
+            // the important part
+            for (const auto &e : map){
+                output_file << e << ",";
+            }
+            uncertainty = {0.000,0.000,0.000};
+            getMap(robot_state.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0],map.data());
+            std::cout<<"Got map2"<<std::endl;
+            std::ofstream output_file2("/home/senft/without_uncertainty.txt");
+            // the important part
+            for (const auto &e : map){
+                output_file2 << e << ",";
+            }
+        }
+    );
 
     ros::Rate loop_rate(1);
     while (ros::ok()){
