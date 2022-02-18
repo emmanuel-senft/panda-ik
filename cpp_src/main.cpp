@@ -13,6 +13,7 @@
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/TwistStamped.h>
 #include <std_msgs/Float32.h>
+#include <std_msgs/String.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <kdl/kdl.hpp>
@@ -137,6 +138,7 @@ void opt(std::array<double,3> uncertainty) {
 
 int main(int argc, char **argv) {
     ros::init(argc, argv, "panda_ik");
+    boost::mutex mutex;
     ros::NodeHandle nh("~");
 
     tf2_ros::Buffer tfBuffer;
@@ -189,11 +191,22 @@ int main(int argc, char **argv) {
 
     int freq = 100;
     bool start = false;
+    bool run = true;
     ros::Subscriber twistSub = nh.subscribe<geometry_msgs::TwistStamped>("input", 1,
         [&](const geometry_msgs::TwistStamped::ConstPtr& msg) {
             commandedVel = msg->twist;
             frame_id = msg->header.frame_id;
             start = true;
+        }
+    );
+        
+    ros::Subscriber commandSub = nh.subscribe<std_msgs::String>("commands", 1,
+        [&](const std_msgs::String::ConstPtr& msg) {
+            if(msg->data == "stop_ik"){
+                run = false;
+            }
+            if(msg->data == "start_ik")
+                run = true;
         }
     );
     ros::Subscriber poseSub = nh.subscribe<geometry_msgs::PoseStamped>("drone_goal", 1,
@@ -225,6 +238,7 @@ int main(int argc, char **argv) {
 
     ros::Subscriber planeSub = nh.subscribe<drone_ros_msgs::Planes>("planes", 1,
         [&](const drone_ros_msgs::Planes::ConstPtr& msg) {
+            boost::lock_guard<boost::mutex> guard(mutex);
             normals.clear();
             points.clear();
             centers.clear();
@@ -267,7 +281,7 @@ int main(int argc, char **argv) {
     
 
     while (ros::ok()){
-        if(! start){
+        if(! start || ! run){
             ros::spinOnce();
             loop_rate.sleep();
             continue;
@@ -313,7 +327,7 @@ int main(int argc, char **argv) {
                 drone_goal[3] = y;
             }
             else{
-                std::cout << "ENDGOAL" << std::endl;
+                // std::cout << "ENDGOAL" << std::endl;
                 drone_goal[0]=droneCommandedPose.pose.position.x;
                 drone_goal[1]=droneCommandedPose.pose.position.y;
                 drone_goal[2]=droneCommandedPose.pose.position.z;
@@ -326,7 +340,6 @@ int main(int argc, char **argv) {
                 drone_goal[3]=y;
             }
 
-            std::cout << "Drone Goal: " << drone_goal[0] << " " << drone_goal[1] << " " << drone_goal[2] << std::endl;            
             double threshold = .01;
             reaching_drone_pose=false;
             for(int i=0;i<4;i++){
