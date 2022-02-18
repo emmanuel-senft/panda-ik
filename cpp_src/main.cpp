@@ -343,7 +343,7 @@ int main(int argc, char **argv) {
             if(!midpoint1_reached){
                 drone_goal[0] = prevCommandedPose.pose.position.x;
                 drone_goal[1] = prevCommandedPose.pose.position.y;
-                drone_goal[2] = 1.2;
+                drone_goal[2] = 1.0;
                 KDL::Rotation drone_goal_rot = KDL::Rotation::Quaternion(prevCommandedPose.pose.orientation.x,prevCommandedPose.pose.orientation.y,prevCommandedPose.pose.orientation.z,prevCommandedPose.pose.orientation.w);
                 double r, p, y;
                 drone_goal_rot.GetRPY(r, p, y);
@@ -355,7 +355,7 @@ int main(int argc, char **argv) {
                 drone_goal[1]=droneCommandedPose.pose.position.y;
                 drone_goal[2]=droneCommandedPose.pose.position.z;
                 if(!midpoint2_reached){
-                    drone_goal[2] = 1.2;
+                    drone_goal[2] = 1.0;
                 }
                 KDL::Rotation drone_goal_rot = KDL::Rotation::Quaternion(droneCommandedPose.pose.orientation.x,droneCommandedPose.pose.orientation.y,droneCommandedPose.pose.orientation.z,droneCommandedPose.pose.orientation.w);
                 double r, p, y;
