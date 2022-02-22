@@ -112,7 +112,7 @@ void opt(std::array<double,3> uncertainty) {
         }
     );
 
-    ros::Rate loop_rate(1);
+    ros::Rate loop_rate(5);
     while (ros::ok()){
 
         geometry_msgs::TransformStamped droneTransform;
@@ -363,7 +363,7 @@ int main(int argc, char **argv) {
                 drone_goal[3]=y;
             }
 
-            double threshold = .01;
+            double threshold = .10;
             reaching_drone_pose=false;
             for(int i=0;i<4;i++){
                 if(pow(drone_goal[i]-drone_current[i],2)>threshold)
