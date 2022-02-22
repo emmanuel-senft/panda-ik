@@ -415,9 +415,9 @@ int main(int argc, char **argv) {
         //robot error, robot out of time, drone error, drone out of time
             std::array<double, 4> orientation = {commandedPose.pose.orientation.x, commandedPose.pose.orientation.y, commandedPose.pose.orientation.z, commandedPose.pose.orientation.w};
             std::array<double, 3> velocity = {commandedVel.linear.x, commandedVel.linear.y,commandedVel.linear.z};
-        
+            uint8_t occlusion=0;
             double cost = solve(robot_state.data(), drone_current.data(), last_drone_goal.data(), name.c_str(), position.data(), orientation.data(), 
-              velocity.data(), errors.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0]);
+              velocity.data(), errors.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0],&occlusion);
             auto cost_msg = std_msgs::Float32();
             cost_msg.data = float(cost);
             cost_pub.publish(cost_msg);

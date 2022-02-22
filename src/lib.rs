@@ -359,10 +359,11 @@ fn get_planes(plane_normals_ptr: *mut f64, plane_points_ptr: *mut f64, plane_cen
 pub extern "C" fn solve(robot_start: *mut [f64;7], drone_current: *mut [f64;4], drone_goal: *mut [f64;4], link_name: *mut c_char, 
                         goal_x: *mut [f64;3], goal_q: *mut [f64;4], vel: *mut [f64;3], errors_start: *mut [bool;4],
                         plane_normals_ptr: *mut f64, plane_points_ptr: *mut f64, plane_centers_ptr: *mut f64,
-                        plane_orientations_ptr: *mut f64, plane_half_axes_ptr: *mut f64, plane_number_ptr: *mut u8, uncertainty_ptr: *mut [f64;3]) -> f64 {
-    
+                        plane_orientations_ptr: *mut f64, plane_half_axes_ptr: *mut f64, plane_number_ptr: *mut u8, uncertainty_ptr: *mut [f64;3], occlusion_ptr: *mut u8) -> f64 {
+       
     let planes = get_planes(plane_normals_ptr, plane_points_ptr, plane_centers_ptr, plane_orientations_ptr, plane_half_axes_ptr, plane_number_ptr);
     let position = unsafe{Vector3::from(std::ptr::read(goal_x))};
+    let mut occlusion = unsafe{u8::try_from(std::ptr::read(plane_number_ptr).clone()).unwrap()};
     let orientation = unsafe{UnitQuaternion::from_quaternion(Quaternion::from(std::ptr::read(goal_q)))};
     let velocity = unsafe{Vector3::from(std::ptr::read(vel))};
     let mut errors = unsafe{std::ptr::read(errors_start).clone()};
@@ -387,7 +388,7 @@ pub extern "C" fn solve(robot_start: *mut [f64;7], drone_current: *mut [f64;4], 
     robot.set_joint_positions_clamped(&init_state);
     robot.update_transforms();
 
-    let (drone_state,cost) = optimize_drone(drone_current, drone_goal, &planes, &position, &orientation, &velocity, &mut errors,robot,uncertainty_ptr);
+    let (drone_state,cost,occlusion) = optimize_drone(drone_current, drone_goal, &planes, &position, &orientation, &velocity, &mut errors,robot,uncertainty_ptr);
     let robot_state = optimize_robot(robot_start, &position, &orientation, &mut errors, robot, name, drone_current);
     
     robot.set_joint_positions_clamped(&robot_state);
@@ -399,6 +400,7 @@ pub extern "C" fn solve(robot_start: *mut [f64;7], drone_current: *mut [f64;4], 
         *drone_current = drone_state;
         *goal_x = [trans.translation.x,trans.translation.y,trans.translation.z];
         *errors_start = errors;
+        *occlusion_ptr = occlusion;
     }
     cost
 }
@@ -614,8 +616,7 @@ fn drone_view_cost(state: &[f64], destination: &Vector3<f64>, orientation: &Unit
         let theta=(state[1]-destination[1]).atan2(state[0]-destination[0]);
         c2 = (norm_angle(theta)-orientation.euler_angles().2).powi(2);
     }
-    let vision_radius = 0.1;
-    let view_cone = get_view_hull(state,destination,uncertainty,vision_radius);
+    let view_cone = get_view_hull(state,destination,uncertainty);
     let c3 =  10.*drone_line_view_cost(&state,&destination);
     let c4 = 500. * drone_plane_occlusion_cost(&state,&destination,&planes,uncertainty,&view_cone); 
     let c5 = 1000.*drone_robot_occlusion(&state,&destination,&robot_occ,uncertainty,drone_size, robot_size,&view_cone);
@@ -623,7 +624,7 @@ fn drone_view_cost(state: &[f64], destination: &Vector3<f64>, orientation: &Unit
 
 }
 
-fn get_view_hull(state: &[f64], destination: &Vector3<f64>, uncertainty: Vector3<f64>, vision_radius: f64)-> Option<ConvexHull<f64>> {
+fn get_view_hull(state: &[f64], destination: &Vector3<f64>, uncertainty: Vector3<f64>)-> Option<ConvexHull<f64>> {
     let x = state[0];
     let y = state[1];
     let z = state[2];
@@ -681,14 +682,14 @@ fn get_closest_plane(ee_position: &Vector3<f64>, planes:&Vec<Plane> ) -> Vector3
     closest_point
 }
 
-fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<Plane>, position: &Vector3<f64>, orientation: &UnitQuaternion<f64>, velocity: &Vector3<f64>, errors: &mut [bool;4], robot: &mut Robot, uncertainty_ptr: *mut [f64;3]) -> ([f64; 4],f64) {
+fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<Plane>, position: &Vector3<f64>, orientation: &UnitQuaternion<f64>, velocity: &Vector3<f64>, errors: &mut [bool;4], robot: &mut Robot, uncertainty_ptr: *mut [f64;3]) -> ([f64; 4],f64,u8) {
     let mut drone_state = unsafe{std::ptr::read(drone_goal).clone()};
     let uncertainty = unsafe{Vector3::try_from(std::ptr::read(uncertainty_ptr).clone()).unwrap()};
     let drone_size = Vector3::new(0.12,0.12,0.025);
     let robot_size = 0.1;
     let drone_current = unsafe{std::ptr::read(drone_c).clone()};
     let last_command = unsafe{std::ptr::read(drone_goal).clone()};
-    let _init_state = unsafe{std::ptr::read(drone_c).clone()};
+    let init_state = unsafe{std::ptr::read(drone_c).clone()};
 
     let (ub,lb) = get_drone_boundary(last_command);
     let bounds = Rectangle::new(Some(&lb), Some(&ub));
@@ -706,7 +707,9 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
     let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
     let robot_coll = Polyline::new(vec![p1,p2,p3,p4,p5,p6],None);
 
-    let closest_point = get_closest_plane(&destination,planes);    
+    let closest_point = get_closest_plane(&destination,planes); 
+    let view_cone = get_view_hull(&init_state,destination,uncertainty);
+    let occlusion = ((drone_plane_occlusion_cost(&init_state,&destination,&planes,uncertainty,&view_cone)+drone_robot_occlusion(&init_state,&destination,&robot_occ,uncertainty,drone_size, robot_size,&view_cone)) > 0.) as u8;
         
     let cost = |u: &[f64], c: &mut f64| {
         let c_collision = drone_collision_cost(&u,&planes,&robot_coll,uncertainty,drone_size,robot_size);
@@ -741,7 +744,7 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
     }
     let cost = drone_view_cost(&drone_state, &destination, &orientation, &planes, &closest_point, &robot_occ, uncertainty, drone_size, robot_size)
             + drone_collision_cost(&drone_state,&planes,&robot_coll,uncertainty,drone_size,robot_size);
-    (drone_state,cost)
+    (drone_state,cost,occlusion)
 }
 
 fn optimize_drone_goal(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], last_command: *mut [f64;4], planes: &Vec<Plane>, errors: &mut [bool;4], robot: &mut Robot, uncertainty_ptr: *mut [f64;3]) -> [f64; 4] {
