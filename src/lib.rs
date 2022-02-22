@@ -95,7 +95,7 @@ fn get_state<'a>() -> &'a mut Mutex<SolverState> {
 }
 
 fn get_gaussian(x: f64, c: f64, k: i32) -> f64{
-    (-(x).powi(k)/(2.*c.powi(k))).exp()
+    (-(x).powi(2)/(2.*c.powi(2))).powi(k).exp()
 }
 
 
@@ -159,9 +159,9 @@ fn drone_polar_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQu
 }
 
 fn drone_safety(drone_caps: &Cuboid<f64>, drone_iso: &Isometry3<f64>, robot_coll: &Polyline<f64>, robot_size: f64) -> f64 {
-    let x = query::distance(drone_iso, drone_caps, &Isometry3::identity(),robot_coll);
+    let x = query::distance(drone_iso, drone_caps, &Isometry3::identity(),robot_coll)+robot_size;
     // println!("{}",x);
-    get_gaussian(x,robot_size,6)
+    get_gaussian(x,0.1,3)
     //(-(x/0.2).powi(2)).exp()
 }
 
@@ -200,7 +200,8 @@ fn drone_robot_occlusion(state: &[f64], destination: &Vector3<f64>,robot_occ: &P
 fn joint_limit_cost(state: &[f64], lb: &[f64], hb: &[f64]) -> f64 {
     let mut n = 0.0;
     for i in 0..7 {
-        n+=groove_loss((state[i]-lb[i])/(hb[i]-lb[i]), 0.5,0.5,12,2.,2.,2);
+        let x = ((state[i]-lb[i])/(hb[i]-lb[i]) - 0.5).abs();
+        n+=0.2*(1./(0.5-x).sqrt() - (1./0.5 as f64).sqrt());                           //(groove_loss((state[i]-lb[i])/(hb[i]-lb[i]), 0.5,0.5,12,2.,2.,2);
     }
     n
 }
@@ -214,7 +215,7 @@ fn drone_plane_collision_cost(drone_caps: &Cuboid<f64>, drone_iso: &Isometry3<f6
     let mut safety_cost = 0.;
     for i in 0..planes.len(){
         let safety_dist = query::distance(&planes[i].trans, &planes[i].cube, drone_iso, drone_caps);
-        safety_cost += get_gaussian(safety_dist,0.1,6);//(-(safety_dist/0.1).powi(6)).exp();
+        safety_cost += get_gaussian(safety_dist,0.1,3);//(-(safety_dist/0.1).powi(6)).exp();
     }
     safety_cost
 }
