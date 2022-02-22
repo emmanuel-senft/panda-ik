@@ -190,6 +190,7 @@ int main(int argc, char **argv) {
     ros::Publisher drone_pub = nh.advertise<geometry_msgs::PoseStamped>("drone_output", 1);
     ros::Publisher panda_pub = nh.advertise<geometry_msgs::PoseStamped>("panda_commanded_pose", 1);
     ros::Publisher cost_pub = nh.advertise<std_msgs::Float32>("view_cost", 1);
+    ros::Publisher event_pub = nh.advertise<std_msgs::String>("event", 1);
 
     geometry_msgs::PoseStamped commandedPose = geometry_msgs::PoseStamped();
     commandedPose.header.frame_id = "panda_link0";
@@ -248,6 +249,9 @@ int main(int argc, char **argv) {
             midpoint2_reached = false;
             reaching_drone_pose = true;
             cout<<"Got pose"<<endl;
+            std_msgs::String event_msg;
+            event_msg.data = "start_goal_move";
+            event_pub.publish(event_msg);
         }
     );
     vector<double> normals;
@@ -384,6 +388,11 @@ int main(int argc, char **argv) {
             if(reaching_drone_pose)
                 solveDroneOnly(robot_state.data(), drone_current.data(), drone_goal.data(), last_drone_goal.data(), errors.data(), 
             &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0]);
+            else{
+                std_msgs::String event_msg;
+                event_msg.data = "finish_goal_move";
+                event_pub.publish(event_msg);
+            }
         }
         if(!reaching_drone_pose){
             commandedPose.pose.position.x+=commandedVel.linear.x/freq;
