@@ -154,12 +154,12 @@ fn drone_altitude_cost(state: &[f64], destination: &Vector3<f64>) -> f64 {
 
 fn drone_polar_cost(state: &[f64], destination: &Vector3<f64>, rotation: &UnitQuaternion<f64>, closest_point: &Vector3<f64>) -> f64 {
     let drone_pose = Vector3::new(state[0],state[1],destination[2]);
-    let angle = (destination-closest_point).angle(&(destination-drone_pose));
-    return (angle-std::f64::consts::PI*3./4.).powi(2);
+    let angle = (closest_point-destination).angle(&(destination-drone_pose));
+    return (angle-std::f64::consts::PI*2./6.).powi(2);
 }
 
 fn drone_safety(drone_caps: &Cuboid<f64>, drone_iso: &Isometry3<f64>, robot_coll: &Polyline<f64>, robot_size: f64) -> f64 {
-    let x = query::distance(drone_iso, drone_caps, &Isometry3::identity(),robot_coll)+robot_size;
+    let x = (0.).max(query::distance(drone_iso, drone_caps, &Isometry3::identity(),robot_coll)-robot_size);
     // println!("{}",x);
     get_gaussian(x,0.1,3)
     //(-(x/0.2).powi(2)).exp()
@@ -589,8 +589,8 @@ fn drone_collision_cost(state: &[f64], planes: &Vec<Plane>, robot_coll: &Polylin
     let rot = OtherUnitQuaternion::from_quaternion(OtherQuaternion::new(0.,0.,0.,1.));
     let drone_iso = &Isometry3::from_parts(trans, rot);
 
-    let c1 = 10.*drone_plane_collision_cost(&drone_caps, &drone_iso, &planes); 
-    let c2 = 10.*drone_safety(&drone_caps, &drone_iso, robot_coll, robot_size);
+    let c1 = 50.*drone_plane_collision_cost(&drone_caps, &drone_iso, &planes); 
+    let c2 = 50.*drone_safety(&drone_caps, &drone_iso, robot_coll, robot_size);
     c1+c2
 }
 
@@ -598,7 +598,7 @@ fn drone_away_cost(state: &[f64], current_position: &[f64]) -> f64{
     let current = Vector3::new(current_position[0],current_position[1],current_position[2]);
     let proposed = Vector3::new(state[0],state[1],state[2]);
 
-    1./((0.1+(current-proposed).norm())+0.1*diff_angle(state[3],current_position[3]))
+    1./((0.1+(current-proposed).norm()))//+0.1*diff_angle(state[3],current_position[3]))
 }
 
 fn drone_motion_cost(state: &[f64], current_position: &[f64]) -> f64{
@@ -619,15 +619,15 @@ fn drone_view_cost(state: &[f64], destination: &Vector3<f64>, orientation: &Unit
     }
     let view_cone = get_view_hull(state,destination,uncertainty);
     let c3 =  10.*drone_line_view_cost(&state,&destination);
-    let c4 = 500. * drone_plane_occlusion_cost(&state,&destination,&planes,uncertainty,&view_cone); 
-    let c5 = 1000.*drone_robot_occlusion(&state,&destination,&robot_occ,uncertainty,drone_size, robot_size,&view_cone);
+    let c4 = 5000. * drone_plane_occlusion_cost(&state,&destination,&planes,uncertainty,&view_cone); 
+    let c5 = 100.*drone_robot_occlusion(&state,&destination,&robot_occ,uncertainty,drone_size, robot_size,&view_cone);
     c1+c2+c3+c4+c5
 
 }
 
 fn get_view_hull(state: &[f64], destination: &Vector3<f64>, uncertainty: Vector3<f64>)-> Option<ConvexHull<f64>> {
-    let x = state[0];
-    let y = state[1];
+    let x = state[0]+0.05*state[3].cos();
+    let y = state[1]+0.05*state[3].sin();
     let z = state[2];
     let u_x = uncertainty[0];
     let u_y = uncertainty[1];
@@ -686,8 +686,8 @@ fn get_closest_plane(ee_position: &Vector3<f64>, planes:&Vec<Plane> ) -> Vector3
 fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<Plane>, position: &Vector3<f64>, orientation: &UnitQuaternion<f64>, velocity: &Vector3<f64>, errors: &mut [bool;4], robot: &mut Robot, uncertainty_ptr: *mut [f64;3]) -> ([f64; 4],f64,u8) {
     let mut drone_state = unsafe{std::ptr::read(drone_goal).clone()};
     let uncertainty = unsafe{Vector3::try_from(std::ptr::read(uncertainty_ptr).clone()).unwrap()};
-    let drone_size = Vector3::new(0.12,0.12,0.025);
-    let robot_size = 0.1;
+    let drone_size = Vector3::new(0.09,0.09,0.02);
+    let robot_size = 0.10;
     let drone_current = unsafe{std::ptr::read(drone_c).clone()};
     let last_command = unsafe{std::ptr::read(drone_goal).clone()};
     let init_state = unsafe{std::ptr::read(drone_c).clone()};
@@ -699,14 +699,15 @@ fn optimize_drone(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], planes: &Vec<
 
     let destination = position;//+velocity*0.25;
 
+    let p0 = OtherPoint::new(0.,0.,0.);
     let p1 = get_point(robot,"panda_joint1");
     let p2 = get_point(robot,"panda_joint3");
     let p3 = get_point(robot,"panda_joint4");
     let p4 = get_point(robot,"panda_joint6");
     let p5 = get_point(robot,"panda_joint7");
     let p6 = get_point(robot,"panda_gripper_joint");
-    let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
-    let robot_coll = Polyline::new(vec![p1,p2,p3,p4,p5,p6],None);
+    let robot_occ = Polyline::new(vec![p0,p1,p2,p3,p4,p5],None);
+    let robot_coll = Polyline::new(vec![p0,p1,p2,p3,p4,p5,p6],None);
 
     let closest_point = get_closest_plane(&destination,planes); 
     let view_cone = get_view_hull(&init_state,destination,uncertainty);
@@ -752,8 +753,8 @@ fn optimize_drone_goal(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], last_com
     let mut drone_state = unsafe{std::ptr::read(drone_c).clone()};
     let uncertainty = unsafe{Vector3::try_from(std::ptr::read(uncertainty_ptr).clone()).unwrap()};
     
-    let drone_size = Vector3::new(0.12,0.12,0.025);
-    let robot_size = 0.1;
+    let drone_size = Vector3::new(0.09,0.09,0.02);
+    let robot_size = 0.10;
     let drone_current = unsafe{std::ptr::read(drone_c).clone()};
     let mut drone_goal = unsafe{std::ptr::read(drone_goal).clone()};
     let last_command = unsafe{std::ptr::read(last_command).clone()};
@@ -765,13 +766,14 @@ fn optimize_drone_goal(drone_c: *mut [f64;4], drone_goal: *mut [f64;4], last_com
     let panoc_cache = &mut state.drone_panoc_cache;
 
     drone_goal[3] = norm_angle(drone_goal[3]);
+    let p0 = OtherPoint::new(0.,0.,0.);
     let p1 = get_point(robot,"panda_joint1");
     let p2 = get_point(robot,"panda_joint3");
     let p3 = get_point(robot,"panda_joint4");
     let p4 = get_point(robot,"panda_joint6");
     let p5 = get_point(robot,"panda_joint7");
     let p6 = get_point(robot,"panda_gripper_joint");
-    let robot_coll = Polyline::new(vec![p1,p2,p3,p4,p5,p6],None);
+    let robot_coll = Polyline::new(vec![p0,p1,p2,p3,p4,p5,p6],None);
     
     let cost = |u: &[f64], c: &mut f64| {
         let c_collision = drone_collision_cost(&u,&planes,&robot_coll,uncertainty,drone_size,robot_size);
@@ -810,8 +812,8 @@ fn optimize_global_view(drone_c: *mut [f64;4], planes: &Vec<Plane>, errors: &mut
     let uncertainty = unsafe{Vector3::try_from(std::ptr::read(uncertainty_ptr).clone()).unwrap()};
     
     
-    let drone_size = Vector3::new(0.12,0.12,0.025);
-    let robot_size = 0.1;
+    let drone_size = Vector3::new(0.09,0.09,0.02);
+    let robot_size = 0.10;
     let drone_current = unsafe{std::ptr::read(drone_c).clone()};
 
     let ub = [
@@ -833,14 +835,15 @@ fn optimize_global_view(drone_c: *mut [f64;4], planes: &Vec<Plane>, errors: &mut
     let state = get_state().get_mut().unwrap();
     let panoc_cache = &mut state.global_drone_panoc_cache;
 
+    let p0 = OtherPoint::new(0.,0.,0.);
     let p1 = get_point(robot,"panda_joint1");
     let p2 = get_point(robot,"panda_joint3");
     let p3 = get_point(robot,"panda_joint4");
     let p4 = get_point(robot,"panda_joint6");
     let p5 = get_point(robot,"panda_joint7");
     let p6 = get_point(robot,"panda_gripper_joint");
-    let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
-    let robot_coll = Polyline::new(vec![p1,p2,p3,p4,p5,p6],None);
+    let robot_occ = Polyline::new(vec![p0,p1,p2,p3,p4,p5],None);
+    let robot_coll = Polyline::new(vec![p0,p1,p2,p3,p4,p5,p6],None);
 
     let iso = robot.find("panda_gripper_joint").unwrap().world_transform().unwrap();
     let destination = iso.translation.vector;
@@ -889,14 +892,14 @@ fn optimize_global_view(drone_c: *mut [f64;4], planes: &Vec<Plane>, errors: &mut
 #[no_mangle]
 pub extern "C" fn getMap(robot_start: *mut [f64;7], plane_normals_ptr: *mut f64, plane_points_ptr: *mut f64, plane_centers_ptr: *mut f64,
                         plane_orientations_ptr: *mut f64, plane_half_axes_ptr: *mut f64, plane_number_ptr: *mut u8, uncertainty_ptr: *mut [f64;3], 
-                        map_start: *mut [f64;10000]) {
+                        map_start: *mut [f64;250000]) {
     let planes = get_planes(plane_normals_ptr, plane_points_ptr, plane_centers_ptr, plane_orientations_ptr, plane_half_axes_ptr, plane_number_ptr);
     
     let uncertainty = unsafe{Vector3::try_from(std::ptr::read(uncertainty_ptr).clone()).unwrap()};
-    let robot_size = 0.1;
-    let drone_size = Vector3::new(0.12,0.12,0.025);
+    let robot_size = 0.10;
+    let drone_size = Vector3::new(0.09,0.09,0.02);
     let mut map = unsafe{std::ptr::read(map_start).clone()};
-    let map_size =100;
+    let map_size =500;
     let state = get_state().get_mut().unwrap();
     let robot = &mut state.robot3;
     let name = "panda_gripper_joint";
@@ -917,14 +920,15 @@ pub extern "C" fn getMap(robot_start: *mut [f64;7], plane_normals_ptr: *mut f64,
     robot.set_joint_positions_clamped(&init_state);
     robot.update_transforms();
 
+    let p0 = OtherPoint::new(0.,0.,0.);
     let p1 = get_point(robot,"panda_joint1");
     let p2 = get_point(robot,"panda_joint3");
     let p3 = get_point(robot,"panda_joint4");
     let p4 = get_point(robot,"panda_joint6");
     let p5 = get_point(robot,"panda_joint7");
     let p6 = get_point(robot,"panda_gripper_joint");
-    let robot_occ = Polyline::new(vec![p1,p2,p3,p4,p5],None);
-    let robot_coll = Polyline::new(vec![p1,p2,p3,p4,p5,p6],None);
+    let robot_occ = Polyline::new(vec![p0,p1,p2,p3,p4,p5],None);
+    let robot_coll = Polyline::new(vec![p0,p1,p2,p3,p4,p5,p6],None);
 
     let iso = robot.find("panda_gripper_joint").unwrap().world_transform().unwrap();
     let destination = iso.translation.vector;

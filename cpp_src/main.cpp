@@ -93,7 +93,7 @@ void opt(std::array<double,3> uncertainty) {
         [&](const std_msgs::String::ConstPtr& msg) {
             boost::lock_guard<boost::mutex> guard(mutex);
             std::array<double,3> uncertainty = {0.05,0.05,0.02};
-            std::array<double,10000> map;
+            std::array<double,250000> map;
             getMap(robot_state.data(), &normals[0], &points[0], &centers[0], &orientations[0], &half_axes[0], &plane_numbers, &uncertainty[0],map.data());
             std::cout<<"Got map"<<std::endl;
             std::ofstream output_file("/home/senft/with_uncertainty.txt");
