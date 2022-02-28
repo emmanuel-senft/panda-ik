@@ -18,7 +18,7 @@ chrono = "*"
 geo = "0.18.0"
 geo-types = "0.7.2"
 ncollide3d = "0.23"
-rand = "*"
+rand = "0.5.0"
 
 [lib]
 name = "panda_ik"
